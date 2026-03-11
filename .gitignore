@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config (可能包含敏感信息)
+config/*.yaml
+config/*.yml
+!config/example.yaml
+workspace/
+
+# Test / cache
+.pytest_cache/
+.coverage
+*.log

@@ -1,0 +1,4 @@
+/* 最小化 TUI 样式 - 使用默认主题 */
+#welcome {
+    height: auto;
+}

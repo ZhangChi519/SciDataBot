@@ -1,0 +1,213 @@
+{
+  "title": "P450 Enzyme 1: BioI Visualization",
+  "protein": {
+    "uniprot_id": "P53554",
+    "name": "Biotin biosynthesis cytochrome P450",
+    "gene": "bioI",
+    "organism": "Bacillus subtilis",
+    "length": 395,
+    "molWeight": "44.9 kDa"
+  },
+  "structure": {
+    "helices": [
+      {
+        "start": 11,
+        "end": 14
+      },
+      {
+        "start": 16,
+        "end": 26
+      },
+      {
+        "start": 45,
+        "end": 53
+      },
+      {
+        "start": 71,
+        "end": 78
+      },
+      {
+        "start": 81,
+        "end": 83
+      },
+      {
+        "start": 88,
+        "end": 97
+      },
+      {
+        "start": 98,
+        "end": 100
+      },
+      {
+        "start": 102,
+        "end": 106
+      },
+      {
+        "start": 109,
+        "end": 121
+      },
+      {
+        "start": 131,
+        "end": 134
+      },
+      {
+        "start": 136,
+        "end": 148
+      },
+      {
+        "start": 152,
+        "end": 154
+      },
+      {
+        "start": 155,
+        "end": 166
+      },
+      {
+        "start": 167,
+        "end": 169
+      },
+      {
+        "start": 175,
+        "end": 201
+      },
+      {
+        "start": 207,
+        "end": 213
+      },
+      {
+        "start": 222,
+        "end": 252
+      },
+      {
+        "start": 255,
+        "end": 263
+      },
+      {
+        "start": 265,
+        "end": 267
+      },
+      {
+        "start": 268,
+        "end": 278
+      },
+      {
+        "start": 310,
+        "end": 313
+      },
+      {
+        "start": 341,
+        "end": 343
+      },
+      {
+        "start": 348,
+        "end": 365
+      }
+    ],
+    "strands": [
+      {
+        "start": 28,
+        "end": 34
+      },
+      {
+        "start": 37,
+        "end": 42
+      },
+      {
+        "start": 127,
+        "end": 130
+      },
+      {
+        "start": 284,
+        "end": 291
+      },
+      {
+        "start": 293,
+        "end": 295
+      },
+      {
+        "start": 298,
+        "end": 300
+      },
+      {
+        "start": 305,
+        "end": 309
+      },
+      {
+        "start": 320,
+        "end": 322
+      },
+      {
+        "start": 382,
+        "end": 384
+      },
+      {
+        "start": 391,
+        "end": 393
+      }
+    ],
+    "turns": [
+      {
+        "start": 122,
+        "end": 126
+      },
+      {
+        "start": 317,
+        "end": 319
+      }
+    ],
+    "disulfide_bonds": [
+      {
+        "start": 250,
+        "end": 275
+      }
+    ],
+    "heme_binding_sites": [
+      {
+        "start": 89,
+        "end": 93,
+        "description": "heme binding"
+      },
+      {
+        "start": 285,
+        "end": 287,
+        "description": "heme binding"
+      },
+      {
+        "start": 343,
+        "end": 345,
+        "description": "axial binding residue (Cys345)"
+      }
+    ],
+    "substrate_binding_sites": [
+      {
+        "position": 60
+      },
+      {
+        "start": 169,
+        "end": 173
+      },
+      {
+        "position": 307
+      }
+    ]
+  },
+  "pdb_structures": [
+    {
+      "id": "3EJB",
+      "resolution": "2.0 A",
+      "chains": "B/D/F/H"
+    },
+    {
+      "id": "3EJD",
+      "resolution": "2.10 A",
+      "chains": "B/D/F/H"
+    },
+    {
+      "id": "3EJE",
+      "resolution": "2.10 A",
+      "chains": "B/D/F/H"
+    }
+  ],
+  "function": "Catalyzes the C-C bond cleavage of fatty acid linked to acyl carrier protein (ACP) to generate pimelic acid for biotin biosynthesis",
+  "ec_number": "1.14.14.46"
+}
