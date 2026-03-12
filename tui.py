@@ -26,35 +26,26 @@ class SimpleTUI:
     
     def print_header(self):
         """打印头部"""
-        mode_indicator = "🔬 数据准备模式" if self.mode == "data_prep" else "💬 简单对话模式"
-        
         print("\033[1;36m" + "=" * 60 + "\033[0m")
-        print(f"\033[1;36m  SciDataBot TUI v1.0\033[0m")
+        print(f"\033[1;36m  SciDataBot TUI v2.0 (新架构)\033[0m")
         print("\033[1;36m" + "=" * 60 + "\033[0m")
-        print(f"\n当前模式: {mode_indicator}")
+        print("\n自动识别任务类型和执行策略")
         print("\n快捷键:")
-        print("  /mode - 切换模式 (data_prep / simple)")
         print("  /quit - 退出程序")
         print("  /help - 显示帮助")
         print("\033[1;36m" + "-" * 60 + "\033[0m\n")
     
     def get_prefix(self):
-        """获取命令前缀"""
-        if self.mode == "data_prep":
-            return "数据准备 "
+        """获取命令前缀 - 新架构不需要前缀"""
         return ""
     
     def process_command(self, message):
         """处理特殊命令"""
         msg = message.strip().lower()
         
-        if msg == "/mode":
-            self.mode = "data_prep" if self.mode == "simple" else "simple"
-            self.clear_screen()
-            self.print_header()
-            mode_name = "数据准备模式" if self.mode == "data_prep" else "简单对话模式"
-            print(f"\033[1;32m已切换到: {mode_name}\033[0m\n")
-            return True
+        # 移除 /mode 命令 - 现在自动判断
+        # if msg == "/mode":
+        #     ...
         
         if msg == "/help":
             self.print_header()
@@ -77,8 +68,8 @@ class SimpleTUI:
         while self.running:
             try:
                 # 显示提示符
-                mode_symbol = "🔬" if self.mode == "data_prep" else "💬"
-                print(f"\033[1;34m{mode_symbol}>\033[0m ", end="", flush=True)
+                mode_symbol = "数据" if self.mode == "data_prep" else "聊天"
+                print(f"[{mode_symbol}] ", end="", flush=True)
                 
                 # 读取输入
                 message = input()

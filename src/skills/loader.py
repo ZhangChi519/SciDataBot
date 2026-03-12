@@ -15,6 +15,7 @@ class SkillMetadata:
     homepage: str = ""
     emoji: str = ""
     requires: dict = field(default_factory=dict)
+    always: bool = False
 
 
 @dataclass
@@ -51,12 +52,17 @@ class Skill:
                         metadata.name = data.get("name", "")
                         metadata.description = data.get("description", "")
                         metadata.homepage = data.get("homepage", "")
-                        # Parse metadata
+                        # Parse metadata - 支持 openclaw 和 scidatabot 格式
                         meta = data.get("metadata", {})
-                        if meta and "openclaw" in meta:
-                            oc_meta = meta["openclaw"]
-                            metadata.emoji = oc_meta.get("emoji", "")
-                            metadata.requires = oc_meta.get("requires", {})
+                        if meta:
+                            # 尝试 scidatabot 格式
+                            sc_meta = meta.get("scidatabot", {})
+                            # 或者回退到 openclaw 格式
+                            if not sc_meta:
+                                sc_meta = meta.get("openclaw", {})
+                            metadata.emoji = sc_meta.get("emoji", "")
+                            metadata.requires = sc_meta.get("requires", {})
+                            metadata.always = sc_meta.get("always", False)
                 except Exception:
                     pass
 

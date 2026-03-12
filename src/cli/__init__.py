@@ -89,22 +89,6 @@ def create_llm_provider(config: dict):
                 timeout=mm_config.get("timeout", 60),
             )
 
-    elif provider_type == "openai":
-        oai_config = config.get("llm", {}).get("openai", {})
-        api_key = oai_config.get("api_key") or os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            typer.echo("Warning: OpenAI API key not set, using MockProvider")
-            return MockProvider(model="mock")
-
-        return OpenAIProvider(
-            api_key=api_key,
-            model=oai_config.get("model", "gpt-4o"),
-            base_url=oai_config.get("base_url"),
-            temperature=oai_config.get("temperature", 0.7),
-            max_tokens=oai_config.get("max_tokens", 4096),
-            timeout=oai_config.get("timeout", 60),
-        )
-
     elif provider_type == "anthropic":
         ant_config = config.get("llm", {}).get("anthropic", {})
         api_key = ant_config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
@@ -223,6 +207,7 @@ def run(
     lane_scheduler.register_lane(LaneConfig("cron", max_concurrent=2, timeout=600))  # 定时任务
     lane_scheduler.register_lane(LaneConfig("subagent", max_concurrent=8, timeout=300))
     lane_scheduler.register_lane(LaneConfig("nested", max_concurrent=4, timeout=300))  # 嵌套任务
+    lane_scheduler.register_lane(LaneConfig("event", max_concurrent=1, timeout=60))  # 事件驱动任务
 
     # Create tool registry with all tools
     tool_registry = ToolRegistry()
@@ -235,7 +220,7 @@ def run(
 
     # Register general tools (web search, etc.)
     from src.tools.general import WebSearchTool, WebFetchTool
-    web_config = config.get("tools", {}).get("web", {})
+    web_config = config_data.get("tools", {}).get("web", {})
     tool_registry.register(
         WebSearchTool(api_key=web_config.get("brave_api_key")),
         "general"
@@ -258,7 +243,7 @@ def run(
     tool_registry.register(DataExporter(), "data_integration")
 
     # Connect MCP servers
-    mcp_config = config.get("tools", {}).get("mcp_servers", {})
+    mcp_config = config_data.get("tools", {}).get("mcp_servers", {})
     if mcp_config:
         from src.tools.general import MCPConfig, connect_mcp_servers
         from contextlib import AsyncExitStack
@@ -491,17 +476,16 @@ def connect(
     typer.echo("  1. anthropic  - Anthropic Claude API")
     typer.echo("  2. minimax   - MiniMax API")
     typer.echo("  3. glm       - Zhipu AI (GLM) API")
-    typer.echo("  4. custom    - Custom OpenAI-compatible API")
     typer.echo("")
     
     # Get provider choice
     provider_choice = typer.prompt(
-        "Select provider (1-4)",
+        "Select provider (1-3)",
         default="2",
         show_default=False,
     )
     
-    provider_map = {"1": "anthropic", "2": "minimax", "3": "glm", "4": "custom"}
+    provider_map = {"1": "anthropic", "2": "minimax", "3": "glm"}
     provider = provider_map.get(provider_choice, "minimax")
     
     typer.echo(f"\nSelected: {provider}")
@@ -511,10 +495,10 @@ def connect(
         "anthropic": "ANTHROPIC_API_KEY",
         "minimax": "MINIMAX_API_KEY",
         "glm": "ZHIPU_API_KEY",
-        "custom": "CUSTOM_API_KEY",
     }
     env_var = env_var_map.get(provider, "API_KEY")
-    current_key = os.environ.get(env_var, "")
+    config_key = config_data.get("llm", {}).get(provider, {}).get("api_key", "")
+    current_key = os.environ.get(env_var, "") or config_key
     
     # Mask the API key for display
     display_key = current_key[:10] + "..." if current_key else ""
@@ -534,18 +518,11 @@ def connect(
     default_model = model_info["default"]
     options = model_info.get("options", [])
     
-    if provider == "custom":
-        model = typer.prompt("Model name", default="gpt-4o")
-    elif options:
+    if options:
         typer.echo(f"\nAvailable models: {', '.join(options)}")
         model = typer.prompt("Model", default=default_model)
     else:
         model = default_model
-    
-    # Get base URL for custom provider
-    base_url = None
-    if provider == "custom":
-        base_url = typer.prompt("Base URL (e.g., https://api.openai.com/v1)", default="")
     
     # Get temperature
     temp_input = typer.prompt("Temperature (0.0-1.0)", default="0.7", show_default=False)
@@ -564,27 +541,18 @@ def connect(
     # Update config
     config_data["llm"]["provider"] = provider
     
-    if provider == "custom":
-        config_data["llm"]["custom"] = {
-            "api_key": api_key,
-            "model": model,
-            "base_url": base_url,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-    else:
-        config_data["llm"][provider] = {
-            "api_key": api_key,
-            "model": model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if provider == "minimax":
-            config_data["llm"][provider]["base_url"] = "https://api.minimaxi.com/anthropic"
-        elif provider == "anthropic":
-            config_data["llm"][provider]["base_url"] = "https://api.anthropic.com"
-        elif provider == "glm":
-            config_data["llm"][provider]["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
+    config_data["llm"][provider] = {
+        "api_key": api_key,
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if provider == "minimax":
+        config_data["llm"][provider]["base_url"] = "https://api.minimaxi.com/anthropic"
+    elif provider == "anthropic":
+        config_data["llm"][provider]["base_url"] = "https://api.anthropic.com"
+    elif provider == "glm":
+        config_data["llm"][provider]["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
     
     # Save config
     with open(cfg_path, "w") as f:

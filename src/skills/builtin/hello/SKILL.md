@@ -2,7 +2,7 @@
 name: hello
 description: "A simple hello world skill demonstrating skill structure"
 homepage: https://example.com
-metadata: { "openclaw": { "emoji": "👋", "requires": {} } }
+metadata: { "scidatabot": { "emoji": "👋", "requires": {}, "always": true } }
 ---
 
 # Hello Skill

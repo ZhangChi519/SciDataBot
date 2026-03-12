@@ -23,6 +23,8 @@ class ExecutionContext:
     processing_results: list = field(default_factory=list)
     integration_result: Any = None
     metadata: dict = field(default_factory=dict)
+    workspace: str = ""
+    system_prompt: str = ""
 
 
 class GeneralAgent:
@@ -211,8 +213,8 @@ class GeneralAgent:
 
     def _build_messages(self, input_data, context: ExecutionContext | None) -> list:
         """构建消息列表"""
-        # 将上下文合并到系统提示中，避免多条 system 消息
-        system_content = self.system_prompt
+        # 优先使用 context 中的 system_prompt，否则使用默认的
+        system_content = context.system_prompt if context and context.system_prompt else self.system_prompt
         
         if context and context.user_input:
             system_content += f"\n\n当前用户输入: {context.user_input}"

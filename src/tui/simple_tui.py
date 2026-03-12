@@ -7,25 +7,21 @@ import sys
 from pathlib import Path
 
 
-def print_welcome(mode="simple"):
+def print_welcome(mode="auto"):
     """打印欢迎界面"""
-    mode_indicator = "🔬 数据准备模式" if mode == "data_prep" else "💬 简单对话模式"
-    
     print("\033[1;36m" + "=" * 60 + "\033[0m")
-    print("\033[1;36m" + "         scidatabot TUI v1.0" + "\033[0m")
+    print("\033[1;36m" + "         SciDataBot TUI v2.0" + "\033[0m")
     print("\033[1;36m" + "=" * 60 + "\033[0m")
     print()
-    print(f"\033[1;32m欢迎使用 scidatabot 文本界面！\033[0m")
-    print(f"\n当前模式: {mode_indicator}")
+    print(f"\033[1;32m欢迎使用 SciDataBot 文本界面！\033[0m")
+    print(f"\n自动识别任务类型和执行策略")
     print()
     print("\033[1;33m功能:\033[0m")
-    print("  - 数据提取与转换")
-    print("  - 天气查询")
-    print("  - 文件操作")
-    print("  - 网络搜索")
+    print("  - 自动识别任务类型")
+    print("  - 简单任务直接执行")
+    print("  - 复杂任务并行处理")
     print()
     print("\033[1;33m快捷键/命令:\033[0m")
-    print("  /mode   - 切换模式 (data_prep / simple)")
     print("  /connect - 配置 API 设置")
     print("  /help   - 显示帮助")
     print("  Ctrl+C  - 退出程序")
@@ -34,26 +30,22 @@ def print_welcome(mode="simple"):
     print()
 
 
-def get_prefix(mode):
-    """获取命令前缀"""
-    if mode == "data_prep":
-        return "数据准备 "
+def get_prefix():
+    """获取命令前缀 - 新架构不需要前缀"""
     return ""
 
 
 async def run_simple_tui(scheduler, config_path=None):
-    """运行简单 TUI (被 CLI 调用)"""
-    mode = "simple"
-    print_welcome(mode)
+    """运行 TUI (新架构 - 自动识别任务)"""
+    print_welcome("auto")
 
     print("\033[1;32m系统就绪！输入您的问题:\033[0m")
     print()
 
     while True:
         try:
-            # 显示提示符
-            mode_symbol = "🔬" if mode == "data_prep" else "💬"
-            print(f"\033[1;34m{mode_symbol}>\033[0m ", end="", flush=True)
+            # 显示提示符 (新架构)
+            print("[SciDataBot] ", end="", flush=True)
             message = input()
 
             if not message.strip():
@@ -62,22 +54,18 @@ async def run_simple_tui(scheduler, config_path=None):
             # 处理命令
             msg = message.strip().lower()
             
-            if msg == "/mode":
-                mode = "data_prep" if mode == "simple" else "simple"
-                os.system('clear' if os.name == 'posix' else 'cls')
-                print_welcome(mode)
-                mode_name = "数据准备模式" if mode == "data_prep" else "简单对话模式"
-                print(f"\033[1;32m已切换到: {mode_name}\033[0m\n")
-                continue
+            # 移除 /mode 命令 - 现在自动判断
+            # if msg == "/mode":
+            #     ...
             
             if msg == "/help":
                 os.system('clear' if os.name == 'posix' else 'cls')
-                print_welcome(mode)
+                print_welcome()
                 continue
             
             if msg == "/connect":
                 os.system('clear' if os.name == 'posix' else 'cls')
-                print_welcome(mode)
+                print_welcome()
                 print("\033[1;33m正在启动配置向导...\033[0m\n")
                 await run_connect(config_path)
                 print()
@@ -87,8 +75,8 @@ async def run_simple_tui(scheduler, config_path=None):
                 print("\n\033[1;31m再见！\033[0m")
                 break
 
-            # 构建完整消息
-            full_message = get_prefix(mode) + message
+            # 构建完整消息 (新架构不需要前缀)
+            full_message = message
 
             # 处理消息
             print("\033[90m处理中...\033[0m")

@@ -60,6 +60,7 @@ class LaneScheduler:
     - 超时控制
     - 错误恢复
     - 流式回调
+    - 事件驱动
     """
 
     def __init__(self):
@@ -75,6 +76,61 @@ class LaneScheduler:
         self.on_task_complete: Optional[Callable] = None
         self.on_task_error: Optional[Callable] = None
         self.on_task_progress: Optional[Callable] = None
+
+        # 事件系统
+        self.event_handlers: dict[str, Callable] = {}
+        self.event_lanes: dict[str, dict] = {}  # event_name -> config
+
+    def register_event(self, event_name: str, handler: Callable, config: dict = None):
+        """注册事件处理器
+        
+        Args:
+            event_name: 事件名称
+            handler: 事件处理函数
+            config: 事件配置 {timeout: 60, timeout_strategy: "react"}
+        """
+        self.event_handlers[event_name] = handler
+        self.event_lanes[event_name] = config or {"timeout": 60, "timeout_strategy": "react"}
+        logger.info(f"注册事件: {event_name} (timeout: {self.event_lanes[event_name].get('timeout', 60)}s)")
+
+    async def emit_event(self, event_name: str, *args, **kwargs):
+        """触发事件
+        
+        Args:
+            event_name: 事件名称
+            *args, **kwargs: 传递给事件处理函数的参数
+            
+        Returns:
+            事件处理结果
+        """
+        if event_name not in self.event_handlers:
+            logger.warning(f"事件未注册: {event_name}")
+            return None
+        
+        config = self.event_lanes.get(event_name, {})
+        timeout = config.get("timeout", 60)
+        timeout_strategy = config.get("timeout_strategy", "react")
+        
+        handler = self.event_handlers[event_name]
+        
+        try:
+            result = await asyncio.wait_for(
+                handler(*args, **kwargs),
+                timeout=timeout
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(f"事件 {event_name} 超时 ({timeout}s)")
+            if timeout_strategy == "react":
+                # 返回超时信息，让调用方处理
+                return {
+                    "timeout": True,
+                    "event": event_name,
+                    "error": f"Event {event_name} timeout after {timeout}s",
+                    "timeout_strategy": timeout_strategy
+                }
+            else:
+                raise TimeoutError(f"Event {event_name} timeout after {timeout}s")
 
     def register_lane(self, config: LaneConfig):
         """注册 Lane"""

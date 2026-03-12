@@ -166,6 +166,43 @@ class SkillLoader:
             return skill.content
         return None
 
+    def build_skills_summary(self) -> str:
+        """生成所有 skills 的摘要（供 Agent 使用）"""
+        skills = self.list()
+        if not skills:
+            return "暂无可用 skills"
+        
+        lines = []
+        for s in skills:
+            emoji = s.metadata.emoji or "📦"
+            always_mark = " (常用)" if s.metadata.always else ""
+            lines.append(f"- {emoji} **{s.name}**: {s.description}{always_mark}")
+        
+        return "\n".join(lines)
+
+    def get_always_skills(self) -> List[str]:
+        """获取始终加载的 skills"""
+        result = []
+        for s in self.list():
+            if s.metadata.always:
+                result.append(s.name)
+        return result
+
+    def load_skills_for_context(self, names: List[str]) -> str:
+        """加载指定 skills 的完整内容"""
+        parts = []
+        for name in names:
+            content = self.get_skill_prompt(name)
+            if content:
+                # 移除 frontmatter
+                if content.startswith("---"):
+                    parts_content = content.split("---", 2)
+                    if len(parts_content) >= 3:
+                        content = parts_content[2].strip()
+                parts.append(f"### Skill: {name}\n\n{content}")
+        
+        return "\n\n---\n\n".join(parts) if parts else ""
+
 
 # Global skill loader instance
 _loader: Optional[SkillLoader] = None
