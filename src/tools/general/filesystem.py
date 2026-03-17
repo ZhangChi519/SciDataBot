@@ -42,11 +42,16 @@ class ReadFileTool(Tool):
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {"path": {"type": "string", "description": "The file path to read"}},
+            "properties": {
+                "path": {"type": "string", "description": "The file path to read"},
+                "offset": {"type": "integer", "description": "Byte offset to start reading from (default: 0)"},
+                "max_length": {"type": "integer", "description": "Maximum number of bytes/characters to read"},
+                "from_end": {"type": "boolean", "description": "If true, offset counts from the end of file"},
+            },
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, offset: int = 0, max_length: int = None, from_end: bool = False, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not file_path.exists():
@@ -54,8 +59,32 @@ class ReadFileTool(Tool):
             if not file_path.is_file():
                 return f"Error: Not a file: {path}"
 
-            content = file_path.read_text(encoding="utf-8")
-            return content
+            # Read file content
+            content = file_path.read_bytes()
+            file_size = len(content)
+            
+            # Calculate actual offset
+            if from_end:
+                # from_end=True: read the last `max_length` bytes (offset shifts further back)
+                tail = max_length if max_length is not None else file_size
+                actual_offset = max(0, file_size - tail - offset)
+                actual_end = max(0, file_size - offset)
+            else:
+                actual_offset = min(offset, file_size)
+                # Calculate end position
+                if max_length is not None:
+                    actual_end = min(file_size, actual_offset + max_length)
+                else:
+                    actual_end = file_size
+            
+            # Extract the requested portion
+            result = content[actual_offset:actual_end]
+            
+            # Try to decode as text, fallback to hex
+            try:
+                return result.decode('utf-8')
+            except:
+                return result.hex()[:200]  # Return hex if not text
         except PermissionError as e:
             return f"Error: {e}"
         except Exception as e:

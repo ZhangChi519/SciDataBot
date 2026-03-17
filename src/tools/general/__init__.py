@@ -1,14 +1,14 @@
 """通用工具模块 - 移植自 nanobot"""
 
-from .base import Tool
+from ..base import Tool
 from .filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
-from .shell import ExecTool
-from .web import WebSearchTool, WebFetchTool
+from .shell import ExecTool, REPLTool
+from .web import WebSearchTool, WebFetchTool, BrowserTool
 from .message import MessageTool, OutboundMessage
 from .spawn import SpawnTool
-from .mcp import MCPConfig, connect_mcp_servers, MCPToolWrapper
+from .mcp import MCPConfig, connect_mcp_servers, MCPToolWrapper, MCPTool
 from .cron import CronTool, CronSchedule
-from .registry import GeneralToolRegistry
+from .weather import WeatherTool
 
 __all__ = [
     # Base
@@ -20,9 +20,11 @@ __all__ = [
     "ListDirTool",
     # Shell
     "ExecTool",
+    "REPLTool",
     # Web
     "WebSearchTool",
     "WebFetchTool",
+    "BrowserTool",
     # Message
     "MessageTool",
     "OutboundMessage",
@@ -32,9 +34,10 @@ __all__ = [
     "MCPConfig",
     "connect_mcp_servers",
     "MCPToolWrapper",
+    "MCPTool",
     # Cron
     "CronTool",
     "CronSchedule",
-    # Registry
-    "GeneralToolRegistry",
+    # Weather
+    "WeatherTool",
 ]

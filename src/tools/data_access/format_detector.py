@@ -104,12 +104,15 @@ class FormatDetector(Tool):
         # 获取文件信息
         stat = path.stat()
 
-        # 尝试获取行数（仅对文本文件）
+        # 尝试获取行数（仅对文本文件，纯 Python 实现避免 subprocess 阻塞）
         line_count = None
         if suffix in ['.csv', '.tsv', '.txt', '.log', '.jsonl']:
             try:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    line_count = sum(1 for _ in f)
+                count = 0
+                with open(path, 'rb') as f:
+                    for _ in f:
+                        count += 1
+                line_count = count
             except Exception:
                 pass
 

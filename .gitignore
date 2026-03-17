@@ -33,3 +33,20 @@ workspace/
 .pytest_cache/
 .coverage
 *.log
+
+# Dev / test scripts (local only)
+test_*.py
+analyze_*.py
+
+# Generated / intermediate data files
+data/
+result.json
+data_extracted.json
+file_structure.json
+last100B.json
+XOR*/
+xor_result*/
+*.txt.out
+
+# Accidental paths
+~/

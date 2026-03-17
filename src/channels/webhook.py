@@ -54,9 +54,12 @@ class WebhookChannel(Channel):
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """Handle incoming webhook request."""
+        import json
         try:
             data = await request.json()
-        except:
+        except (json.JSONDecodeError, ValueError) as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Invalid JSON in webhook: {e}")
             data = {}
 
         # Extract message info based on common formats

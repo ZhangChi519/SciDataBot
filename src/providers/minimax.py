@@ -1,10 +1,17 @@
 """MiniMax LLM Provider - 使用 Anthropic 兼容格式."""
+import asyncio
 import json
 import os
+import uuid
 from typing import Any, AsyncIterator, Optional
 
+import aiohttp
+import certifi
 from loguru import logger
 from .base import LLMProvider, LLMMessage, LLMTool, LLMResponse, ToolCall
+
+os.environ['SSL_CERT_FILE'] = certifi.where()
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 
 
 class MiniMaxProvider(LLMProvider):
@@ -18,6 +25,9 @@ class MiniMaxProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         timeout: float = 60.0,
+        verify_ssl: bool = True,
+        max_retries: int = 5,
+        retry_delay: float = 2.0,
     ):
         """Initialize MiniMax provider.
 
@@ -28,6 +38,9 @@ class MiniMaxProvider(LLMProvider):
             temperature: Sampling temperature.
             max_tokens: Maximum tokens to generate.
             timeout: Request timeout in seconds.
+            verify_ssl: Whether to verify SSL certificates.
+            max_retries: Maximum number of retries for rate limit errors.
+            retry_delay: Delay between retries in seconds.
         """
         self.model = model
         self.api_key = api_key or os.environ.get("ANTHROPIC_AUTH_TOKEN")
@@ -35,6 +48,12 @@ class MiniMaxProvider(LLMProvider):
         self.temperature = temperature
         self.max_tokens = max_tokens or 4096
         self.timeout = max(timeout, 120)  # 至少120秒
+        self.verify_ssl = verify_ssl
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        
+        # 使用信号量限制并发数,防止触发速率限制
+        self._semaphore = asyncio.Semaphore(1)
 
         if not self.api_key:
             raise ValueError("MiniMax API key is required. Set ANTHROPIC_AUTH_TOKEN env var or pass api_key.")
@@ -46,117 +65,53 @@ class MiniMaxProvider(LLMProvider):
         **kwargs,
     ) -> LLMResponse:
         """Send a chat completion request - 使用 Anthropic 兼容格式."""
-        import aiohttp
-
+        
+        # 使用信号量限制并发数
+        async with self._semaphore:
+            return await self._chat_with_retry(messages, tools, **kwargs)
+    
+    async def _chat_with_retry(
+        self,
+        messages: list[LLMMessage],
+        tools: Optional[list[LLMTool]] = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """带重试的聊天请求"""
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                return await self._do_chat(messages, tools, **kwargs)
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+                
+                # 检查是否是速率限制错误
+                if "rate limit" in error_str.lower() or "500" in error_str or "当前请求量较高" in error_str:
+                    wait_time = self.retry_delay * (attempt + 1)
+                    logger.warning(f"MiniMax API 速率限制，{wait_time}秒后重试 ({attempt + 1}/{self.max_retries})")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    # 非速率限制错误，直接抛出
+                    raise e
+        
+        # 所有重试都失败
+        raise last_error
+    
+    async def _do_chat(
+        self,
+        messages: list[LLMMessage],
+        tools: Optional[list[LLMTool]] = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """实际的聊天请求"""
         url = f"{self.base_url}/v1/messages"
 
-        # Convert messages to Anthropic format
-        anthropic_messages = []
-        system_prompt = None
+        # 使用基类方法转换消息和工具
+        anthropic_messages, system_prompt = self.convert_messages_anthropic(messages)
+        anthropic_tools = self.convert_tools_anthropic(tools)
 
-        for msg in messages:
-            # Handle both dict and LLMMessage objects
-            if isinstance(msg, dict):
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                tool_call_id = msg.get("tool_call_id")
-            else:
-                role = msg.role
-                content = msg.content
-                tool_call_id = getattr(msg, 'tool_call_id', None)
-            
-            if role == "system":
-                system_prompt = content
-            elif role == "user":
-                # Check if this is a tool result message (list content with tool_result type)
-                if isinstance(content, list):
-                    processed_content = []
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "tool_result":
-                            processed_content.append({
-                                "type": "tool_result",
-                                "tool_use_id": item.get("tool_use_id", tool_call_id or "unknown"),
-                                "content": item.get("content", ""),
-                            })
-                        else:
-                            processed_content.append(item)
-                    anthropic_messages.append({"role": "user", "content": processed_content})
-                else:
-                    anthropic_messages.append({"role": "user", "content": content})
-            elif role == "assistant":
-                # Handle assistant message with potential tool_calls
-                if isinstance(msg, dict) and "tool_calls" in msg:
-                    msg_content = content or ""
-                    tool_calls_list = msg.get("tool_calls", [])
-                    
-                    blocks = []
-                    if msg_content:
-                        blocks.append({"type": "text", "text": msg_content})
-                    
-                    for tc in tool_calls_list:
-                        if isinstance(tc, dict):
-                            tc_id = tc.get("id", "")
-                            func = tc.get("function", {})
-                            tc_name = func.get("name", "")
-                            tc_args = func.get("arguments", "")
-                        else:
-                            tc_id = tc.id
-                            tc_name = tc.name
-                            tc_args = tc.arguments
-                        
-                        if isinstance(tc_args, str):
-                            try:
-                                tc_args = json.loads(tc_args)
-                            except:
-                                tc_args = {}
-                        
-                        blocks.append({
-                            "type": "tool_use",
-                            "id": tc_id,
-                            "name": tc_name,
-                            "input": tc_args,
-                        })
-                    
-                    anthropic_messages.append({"role": "assistant", "content": blocks})
-                else:
-                    anthropic_messages.append({"role": "assistant", "content": content})
-            elif role == "tool":
-                anthropic_messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_call_id or "unknown",
-                            "content": content,
-                        }
-                    ],
-                })
-
-        # Convert tools to Anthropic format
-        anthropic_tools = None
-        if tools:
-            anthropic_tools = []
-            for tool in tools:
-                if isinstance(tool, dict):
-                    if "function" in tool:
-                        func = tool.get("function", {})
-                        anthropic_tools.append({
-                            "name": func.get("name", ""),
-                            "description": func.get("description", ""),
-                            "input_schema": func.get("parameters", {}),
-                        })
-                    else:
-                        anthropic_tools.append({
-                            "name": tool.get("name", ""),
-                            "description": tool.get("description", ""),
-                            "input_schema": tool.get("parameters", {}),
-                        })
-                else:
-                    anthropic_tools.append({
-                        "name": tool.name,
-                        "description": tool.description,
-                        "input_schema": tool.parameters,
-                    })
+        logger.info(f"[MiniMax] Sending request with {len(anthropic_messages)} messages, tools: {len(anthropic_tools) if anthropic_tools else 0}")
 
         # Build request parameters
         payload = {
@@ -178,23 +133,21 @@ class MiniMaxProvider(LLMProvider):
             "anthropic-version": "2023-06-01",
         }
 
-        import certifi
-
-        try:
-            os.environ['SSL_CERT_FILE'] = certifi.where()
-            os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-        except Exception:
-            pass
-
         timeout = aiohttp.ClientTimeout(total=self.timeout)
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        # 创建 TCPConnector 来控制 SSL 验证
+        connector = aiohttp.TCPConnector(ssl=False if not self.verify_ssl else None)
+        
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             async with session.post(url, json=payload, headers=headers) as response:
+                logger.info(f"[MiniMax] Response status: {response.status}")
                 if response.status != 200:
                     error_text = await response.text()
+                    logger.error(f"[MiniMax] Error response: {error_text}")
                     raise Exception(f"MiniMax API error: {response.status} - {error_text}")
 
                 result = await response.json()
+                logger.info(f"[MiniMax] Response received: {result.get('content', [])}")
 
         # Parse response
         content = ""
@@ -212,8 +165,9 @@ class MiniMaxProvider(LLMProvider):
                 has_tool_calls = True
                 if tool_calls is None:
                     tool_calls = []
+                tool_id = block.get("id", "") or f"toolu_{uuid.uuid4().hex[:8]}"
                 tool_calls.append(ToolCall(
-                    id=block.get("id", ""),
+                    id=tool_id,
                     name=block.get("name", ""),
                     arguments=block.get("input", {}),
                 ))

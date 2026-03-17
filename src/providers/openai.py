@@ -2,7 +2,7 @@
 import os
 from typing import Any, AsyncIterator, Optional
 
-from .base import LLMProvider, LLMMessage, LLMTool, LLMResponse
+from .base import LLMProvider, LLMMessage, LLMTool, LLMResponse, ToolCall
 
 
 class OpenAIProvider(LLMProvider):
@@ -64,35 +64,9 @@ class OpenAIProvider(LLMProvider):
         Returns:
             LLMResponse object with content and tool calls.
         """
-        # Convert messages to OpenAI format
-        openai_messages = []
-        for msg in messages:
-            if msg.role == "user":
-                openai_messages.append({"role": "user", "content": msg.content})
-            elif msg.role == "assistant":
-                openai_messages.append({"role": "assistant", "content": msg.content})
-            elif msg.role == "system":
-                openai_messages.append({"role": "system", "content": msg.content})
-            elif msg.role == "tool":
-                openai_messages.append({
-                    "role": "tool",
-                    "content": msg.content,
-                    "tool_call_id": msg.tool_call_id,
-                })
-
-        # Convert tools to OpenAI format
-        openai_tools = None
-        if tools:
-            openai_tools = []
-            for tool in tools:
-                openai_tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    },
-                })
+        # 使用基类方法转换消息和工具
+        openai_messages = self.convert_messages_openai(messages)
+        openai_tools = self.convert_tools_openai(tools)
 
         # Build request parameters
         params = {
@@ -119,11 +93,18 @@ class OpenAIProvider(LLMProvider):
         if message.tool_calls:
             tool_calls = []
             for tc in message.tool_calls:
-                tool_calls.append({
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                })
+                import json as _json
+                args = tc.function.arguments
+                if isinstance(args, str):
+                    try:
+                        args = _json.loads(args)
+                    except Exception:
+                        args = {}
+                tool_calls.append(ToolCall(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=args,
+                ))
 
         return LLMResponse(
             content=message.content or "",

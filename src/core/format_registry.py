@@ -102,11 +102,11 @@ def default_extract_metadata(file_path: Path) -> dict:
 
 def _register_builtin_formatters():
     """注册内置格式处理器"""
-    from .metadata.image import extract_image_metadata
-    from .metadata.pointcloud import extract_pointcloud_metadata
-    from .metadata.numpy import extract_numpy_metadata
-    from .metadata.video import extract_video_metadata
-    from .metadata.binary import extract_binary_metadata
+    from src.tools.data_access.metadata.image import extract_image_metadata
+    from src.tools.data_access.metadata.pointcloud import extract_pointcloud_metadata
+    from src.tools.data_access.metadata.numpy import extract_numpy_metadata
+    from src.tools.data_access.metadata.video import extract_video_metadata
+    from src.tools.data_access.metadata.binary import extract_binary_metadata
     
     # 图像格式
     FormatHandlerRegistry.register('image', [

@@ -1,48 +1,76 @@
-"""scidatabot 主入口"""
+"""SciDataBot Main Entry Point."""
 
 import asyncio
+import sys
 from pathlib import Path
 
 from loguru import logger
 
-from .core.scheduler import TaskScheduler
-from .core.lane_scheduler import LaneScheduler, LaneConfig
-from .tools.registry import ToolRegistry
-from .tools.data_access import FormatDetector, MetadataExtractor, QualityAssessor
-from .tools.intent_parser import IntentClassifier, PlanningGenerator
-from .tools.data_processing import DataExtractor, DataTransformer, DataCleaner, StatisticsAnalyzer, MatFileExtractor
-from .tools.data_integration import TemporalAligner, SpatialAligner, DataExporter
-from .tools.data_access.weather import WeatherTool
+# 配置日志同时输出到 stdout 和文件
+logger.remove()
+logger.add(sys.stderr, level="INFO")
+logger.add("scidatabot.log", rotation="10 MB", retention="7 days", level="DEBUG")
+
+from src.config import load_config, get_cron_dir
+from src.core.main_agent import MainAgent
+from src.tools.registry import ToolRegistry
+from src.cron import CronService
 
 
-def create_app(config: dict = None, confirm_callback=None):
-    """创建应用"""
+def create_app(config: dict = None):
+    """Create the SciDataBot application."""
     config = config or {}
-
+    
     workspace = Path(config.get("workspace", "~/.scidatabot")).expanduser()
     workspace.mkdir(parents=True, exist_ok=True)
-
-    # 1. 创建 Provider - 从配置或CLI
-    from .cli import create_llm_provider
+    
+    # Create provider
+    from src.cli import create_llm_provider
     provider = create_llm_provider(config)
-    logger.info(f"使用 LLM Provider: {provider.name}")
-
-    # 2. 创建 Lane 调度器 (简化版)
-    lane_scheduler = LaneScheduler()
-    lane_scheduler.register_lane(LaneConfig("main", max_concurrent=1, timeout=300))
-    lane_scheduler.register_lane(LaneConfig("subagent", max_concurrent=8, timeout=300))
-
-    # 3. 创建工具注册表
+    logger.info(f"Using LLM Provider: {provider.name}")
+    
+    # Create CronService
+    cron_dir = get_cron_dir()
+    cron_store_path = cron_dir / "jobs.json"
+    
+    # Create a placeholder for message bus (will be set after agent is created)
+    message_bus_holder = {"bus": None}
+    
+    async def on_cron_job(job):
+        """Callback when a cron job executes."""
+        bus = message_bus_holder.get("bus")
+        if not bus:
+            logger.warning("Cron: no message bus available")
+            return None
+        
+        from src.bus.events import InboundMessage
+        
+        msg = InboundMessage(
+            channel=job.payload.channel or "cli",
+            sender_id="cron",
+            chat_id=job.payload.to or "direct",
+            content=job.payload.message,
+        )
+        await bus.publish_inbound(msg)
+        logger.info(f"Cron: published job '{job.name}' to bus")
+        return None
+    
+    cron_service = CronService(store_path=cron_store_path, on_job=on_cron_job)
+    logger.info("CronService initialized")
+    
+    # Create tool registry
     tool_registry = ToolRegistry()
-
-    # 注册数据接入工具
+    
+    # Register tools
+    from src.tools.data_access import FormatDetector, MetadataExtractor, QualityAssessor
+    from src.tools.data_processing import DataExtractor, DataTransformer, DataCleaner, StatisticsAnalyzer, MatFileExtractor
+    from src.tools.data_integration import TemporalAligner, SpatialAligner, DataExporter
+    from src.tools.general import WeatherTool, WebSearchTool, WebFetchTool, ExecTool, ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, SpawnTool, CronTool
+    
     tool_registry.register(FormatDetector(), "data_access")
     tool_registry.register(MetadataExtractor(), "data_access")
     tool_registry.register(QualityAssessor(), "data_access")
-    tool_registry.register(WeatherTool(), "data_access")
-
-    # 注册通用工具 (web search, etc.)
-    from src.tools.general import WebSearchTool, WebFetchTool, ExecTool, ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
+    
     tool_registry.register(WebSearchTool(), "general")
     tool_registry.register(WebFetchTool(), "general")
     tool_registry.register(ExecTool(), "general")
@@ -50,80 +78,156 @@ def create_app(config: dict = None, confirm_callback=None):
     tool_registry.register(WriteFileTool(), "general")
     tool_registry.register(EditFileTool(), "general")
     tool_registry.register(ListDirTool(), "general")
-
-    # 注册意图解析工具
-    tool_registry.register(IntentClassifier(), "intent_parser")
-    tool_registry.register(PlanningGenerator(), "intent_parser")
-
-    # 注册数据处理工具
+    tool_registry.register(WeatherTool(), "general")
+    spawn_tool = SpawnTool()
+    tool_registry.register(spawn_tool, "general")
+    tool_registry.register(CronTool(cron_service=cron_service), "general")
+    cron_tool = tool_registry._tools.get("cron")
+    if cron_tool:
+        cron_tool.set_context(channel="cli", chat_id="direct")
+    
     tool_registry.register(DataExtractor(), "data_processing")
     tool_registry.register(DataTransformer(), "data_processing")
     tool_registry.register(DataCleaner(), "data_processing")
     tool_registry.register(StatisticsAnalyzer(), "data_processing")
     tool_registry.register(MatFileExtractor(), "data_processing")
-
-    # 注册数据整合工具
+    
     tool_registry.register(TemporalAligner(), "data_integration")
     tool_registry.register(SpatialAligner(), "data_integration")
     tool_registry.register(DataExporter(), "data_integration")
-
-    logger.info(f"注册了 {len(tool_registry)} 个工具")
-
-    # 4. 创建任务调度器
-    scheduler = TaskScheduler(
+    
+    logger.info(f"Registered {len(tool_registry)} tools")
+    
+    # Create MainAgent
+    llm_config = config.get("llm", {})
+    provider_type = llm_config.get("provider", "minimax")
+    provider_model_config = llm_config.get(provider_type, {})
+    model = provider_model_config.get("model", "anthropic/claude-opus-4-5")
+    max_iterations = config.get("max_iterations", 40)
+    
+    agent = MainAgent(
         provider=provider,
         workspace=workspace,
+        model=model,
+        max_iterations=max_iterations,
         tool_registry=tool_registry,
-        lane_scheduler=lane_scheduler,
-        confirm_callback=confirm_callback,
     )
+    
+    # Set message bus for cron service
+    message_bus_holder["bus"] = agent.bus
 
-    return scheduler
+    # Attach cron_service to agent for easy access
+    agent.cron_service = cron_service
+
+    # Wire SpawnTool callback → SubagentManager.spawn (task_planner entry point)
+    registered_spawn = tool_registry._tools.get("spawn")
+    if registered_spawn:
+        async def _spawn_callback(
+            task: str,
+            label: str = None,
+            origin_channel: str = "cli",
+            origin_chat_id: str = "direct",
+            session_key: str = None,
+        ) -> str:
+            return await agent.subagent_manager.spawn(
+                task=task,
+                label=label,
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
+                session_key=session_key,
+                subagent_type="task_planner",
+            )
+        registered_spawn._subagent_callback = _spawn_callback
+        logger.info("SpawnTool callback wired to SubagentManager")
+
+    return agent
 
 
 async def main():
-    """主函数"""
-    import sys
-
+    """Main entry point."""
     logger.info("=" * 50)
-    logger.info("scidatabot 启动")
+    logger.info("SciDataBot Starting")
     logger.info("=" * 50)
-
-    # 加载配置 - 使用 main.py 所在目录的 config.yaml
-    from .cli import load_config
+    
+    # Load config
+    from src.cli import load_config
     config_dir = Path(__file__).parent.parent
     config_path = config_dir / "config.yaml"
     config = load_config(str(config_path))
-
-    # 创建应用 - 自动确认危险工具 (非交互模式)
-    async def auto_confirm(tool_name: str, arguments: dict) -> bool:
-        logger.info(f"危险工具请求: {tool_name} - 自动确认")
-        return True
     
-    scheduler = create_app(config, confirm_callback=auto_confirm)
-
-    # 打印可用工具
-    print("\n可用工具类别:")
-    for cat in scheduler.tool_registry.list_categories():
-        tools = scheduler.tool_registry.list_tools(cat)
+    # Create app
+    agent = create_app(config)
+    cron_service = agent.cron_service
+    
+    # Print available tools
+    print("\nAvailable tool categories:")
+    for cat in agent.tool_registry.list_categories():
+        tools = agent.tool_registry.list_tools(cat)
         print(f"  {cat}: {', '.join(tools)}")
-
-    # 示例请求
+    
+    # Get query
     if len(sys.argv) > 1:
         query = " ".join(sys.argv[1:])
     else:
-        query = "分析过去24小时北京和上海的PM2.5数据，比较两地污染水平"
-
-    print(f"\n用户请求: {query}")
+        print("请输入查询:")
+        query = input()
+    
+    print(f"\nUser request: {query}")
     print("-" * 50)
-
-    # 执行
-    result = await scheduler.execute(query)
-
-    print("\n" + "=" * 50)
-    print("结果:")
-    print("=" * 50)
-    print(result.get("final_report", "无结果"))
+    print("模式: 服务模式 (输入 Ctrl+C 退出)")
+    print("-" * 50)
+    
+    # Run service mode
+    from src.bus.events import InboundMessage, OutboundMessage
+    
+    async def run_service_mode():
+        # Start CronService
+        await cron_service.start()
+        
+        # Start agent processing in background
+        agent_task = asyncio.create_task(agent.run())
+        
+        # Wait a bit for agent to start
+        await asyncio.sleep(0.5)
+        
+        # Send initial query to bus
+        initial_msg = InboundMessage(
+            channel="cli",
+            sender_id="user",
+            chat_id="direct",
+            content=query,
+        )
+        await agent.bus.publish_inbound(initial_msg)
+        
+        # Wait for results
+        last_result_time = None
+        consecutive_no_result = 0
+        
+        try:
+            while agent._running:
+                try:
+                    msg = await asyncio.wait_for(agent.bus.consume_outbound(), timeout=2.0)
+                    if msg and isinstance(msg, OutboundMessage):
+                        print("\n" + "=" * 50)
+                        print("Result:")
+                        print("=" * 50)
+                        print(msg.content)
+                        print()
+                        last_result_time = asyncio.get_event_loop().time()
+                        consecutive_no_result = 0
+                except asyncio.TimeoutError:
+                    if last_result_time:
+                        consecutive_no_result += 1
+                        # If no new results for 10 times (20s), exit
+                        if consecutive_no_result >= 10:
+                            break
+                    if not agent._running:
+                        break
+        finally:
+            agent.stop()
+            cron_service.stop()
+    
+    await run_service_mode()
 
 
 if __name__ == "__main__":

@@ -87,6 +87,14 @@ class MemorySkill(Tool):
     async def _delete(self, key: str) -> ToolResult:
         """Delete a memory."""
         if key in self._storage:
+            # Clean up index
+            key_lower = key.lower()
+            for word in key_lower.split():
+                if word in self._index:
+                    self._index[word].discard(key)
+                    if not self._index[word]:
+                        del self._index[word]
+            
             del self._storage[key]
             return ToolResult(success=True, data={"key": key, "deleted": True})
         return ToolResult(success=False, error=f"Key not found: {key}")

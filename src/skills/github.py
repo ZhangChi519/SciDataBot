@@ -2,6 +2,7 @@
 import asyncio
 from typing import Any, Dict, List, Optional
 
+import aiohttp
 from src.tools.base import Tool, ToolResult, ToolCategory
 
 
@@ -54,8 +55,6 @@ class GitHubSkill(Tool):
         data: Optional[Dict] = None,
     ) -> Dict:
         """Make GitHub API request."""
-        import aiohttp
-
         headers = {
             "Accept": "application/vnd.github.v3+json",
         }

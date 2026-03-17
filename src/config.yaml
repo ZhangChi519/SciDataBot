@@ -1,8 +1,0 @@
-llm:
-  minimax:
-    api_key: sk-cp-kvwFXiy6b1uz9VO1f_mlWmK9kKrP8Nuj9vrZSkUIpT9BDomWxVhLJwMlg6Dat32vMEYOeQSuFBAwlBXlMHjsL-HoDcbIjyokQUMApXwBuyW6IHifHynvM0M
-    base_url: https://api.minimaxi.com/anthropic
-    max_tokens: 4096
-    model: MiniMax-M2.5
-    temperature: 0.7
-  provider: minimax

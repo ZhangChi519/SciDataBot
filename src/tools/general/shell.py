@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .base import Tool
+from src.tools.base import Tool, ToolResult, ToolCategory
 
 
 class ExecTool(Tool):
@@ -89,8 +89,6 @@ class ExecTool(Tool):
                 )
             except asyncio.TimeoutError:
                 process.kill()
-                # Wait for the process to fully terminate so pipes are
-                # drained and file descriptors are released.
                 try:
                     await asyncio.wait_for(process.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
@@ -112,7 +110,6 @@ class ExecTool(Tool):
 
             result = "\n".join(output_parts) if output_parts else "(no output)"
 
-            # Truncate very long output
             max_len = 10000
             if len(result) > max_len:
                 result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
@@ -153,6 +150,95 @@ class ExecTool(Tool):
 
     @staticmethod
     def _extract_absolute_paths(command: str) -> list[str]:
-        win_paths = re.findall(r"[A-Za-z]:\\[^\s\"'|><;]+", command)   # Windows: C:\...
-        posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", command) # POSIX: /absolute only
+        win_paths = re.findall(r"[A-Za-z]:\\[^\s\"'|><;]+", command)
+        posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", command)
         return win_paths + posix_paths
+
+
+class REPLTool(Tool):
+    """Tool for executing Python code in a REPL."""
+
+    name = "python"
+    description = "Execute Python code in a sandboxed environment"
+    category = ToolCategory.GENERAL
+
+    def __init__(self, timeout: int = 60):
+        self.timeout = timeout
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["run"], "default": "run"},
+                "code": {"type": "string", "description": "Python code to execute"}
+            },
+            "required": ["code"]
+        }
+
+    async def execute(self, operation: str = "run", code: str = None, **kwargs) -> ToolResult:
+        """Execute Python code."""
+        if not code:
+            return ToolResult(success=False, error="Code is required")
+
+        try:
+            return await self._run_code(code)
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    async def _run_code(self, code: str) -> ToolResult:
+        """Run Python code in a restricted environment."""
+        restricted_globals = {
+            "__builtins__": {
+                "print": print,
+                "len": len,
+                "str": str,
+                "int": int,
+                "float": float,
+                "list": list,
+                "dict": dict,
+                "tuple": tuple,
+                "set": set,
+                "range": range,
+                "enumerate": enumerate,
+                "zip": zip,
+                "map": map,
+                "filter": filter,
+                "sum": sum,
+                "min": min,
+                "max": max,
+                "abs": abs,
+                "round": round,
+                "sorted": sorted,
+                "reversed": reversed,
+                "any": any,
+                "all": all,
+                "isinstance": isinstance,
+                "type": type,
+            },
+        }
+
+        local_vars = {}
+        output = []
+
+        def custom_print(*args, **kw):
+            output.append(" ".join(str(a) for a in args))
+
+        restricted_globals["__builtins__"]["print"] = custom_print
+
+        try:
+            exec(code, restricted_globals, local_vars)
+
+            return ToolResult(
+                success=True,
+                data={
+                    "stdout": "\n".join(output),
+                    "variables": {k: str(v) for k, v in local_vars.items()},
+                },
+            )
+
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                error=f"Execution error: {str(e)}",
+            )

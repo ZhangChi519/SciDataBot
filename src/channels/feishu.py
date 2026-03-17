@@ -7,6 +7,7 @@ import hmac
 from typing import Any, Optional
 from urllib.parse import parse_qs
 
+import aiohttp
 from .base import Channel, ChannelType, InboundMessage, OutboundMessage
 
 
@@ -25,18 +26,23 @@ class FeishuChannel(Channel):
         self.verification_token = config.get("verification_token")
         self._access_token: Optional[str] = None
         self._token_expires_at = 0
+        self._session: Optional[aiohttp.ClientSession] = None
 
     async def start(self) -> None:
         """Start Feishu bot."""
         if not self.app_id or not self.app_secret:
             raise ValueError("Feishu app_id and app_secret are required")
 
+        self._session = aiohttp.ClientSession()
         await self._get_access_token()
         print(f"Feishu channel started (app_id: ...{self.app_id[-4:]})")
 
     async def stop(self) -> None:
         """Stop Feishu channel."""
         self._access_token = None
+        if self._session:
+            await self._session.close()
+            self._session = None
         print("Feishu channel stopped")
 
     async def send_message(self, message: OutboundMessage) -> str:
@@ -96,7 +102,8 @@ class FeishuChannel(Channel):
         payload: dict = None,
     ) -> dict:
         """Make API request to Feishu."""
-        import aiohttp
+        if not self._session:
+            self._session = aiohttp.ClientSession()
 
         # Get access token
         await self._get_access_token()
@@ -107,13 +114,12 @@ class FeishuChannel(Channel):
             "Content-Type": "application/json; charset=utf-8",
         }
 
-        async with aiohttp.ClientSession() as session:
-            if method == "GET":
-                async with session.get(url, headers=headers) as response:
-                    result = await response.json()
-            else:
-                async with session.post(url, json=payload, headers=headers) as response:
-                    result = await response.json()
+        if method == "GET":
+            async with self._session.get(url, headers=headers) as response:
+                result = await response.json()
+        else:
+            async with self._session.post(url, json=payload, headers=headers) as response:
+                result = await response.json()
 
         if result.get("code") and result.get("code") != 0:
             raise Exception(f"Feishu API error: {result.get('msg')}")
@@ -132,29 +138,33 @@ class FeishuWebHookChannel(Channel):
         """
         super().__init__(ChannelType.FEISHU, config)
         self.webhook_url = config.get("webhook_url")
+        self._session: Optional[aiohttp.ClientSession] = None
 
     async def start(self) -> None:
         """Start webhook channel."""
         if not self.webhook_url:
             raise ValueError("Feishu webhook_url is required")
+        self._session = aiohttp.ClientSession()
         print(f"Feishu webhook channel ready")
 
     async def stop(self) -> None:
         """Stop webhook channel."""
-        pass
+        if self._session:
+            await self._session.close()
+            self._session = None
 
     async def send_message(self, message: OutboundMessage) -> str:
         """Send message via Feishu webhook."""
-        import aiohttp
+        if not self._session:
+            self._session = aiohttp.ClientSession()
 
         payload = {
             "msg_type": "text",
             "content": {"text": message.content},
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(self.webhook_url, json=payload) as response:
-                if response.status != 200:
-                    raise Exception(f"Feishu webhook error: {response.status}")
+        async with self._session.post(self.webhook_url, json=payload) as response:
+            if response.status != 200:
+                raise Exception(f"Feishu webhook error: {response.status}")
 
         return "webhook_sent"

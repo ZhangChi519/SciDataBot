@@ -3,8 +3,13 @@ import json
 import os
 from typing import Any, AsyncIterator, Optional
 
+import aiohttp
+import certifi
 from loguru import logger
 from .base import LLMProvider, LLMMessage, LLMTool, LLMResponse, ToolCall
+
+os.environ['SSL_CERT_FILE'] = certifi.where()
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 
 
 class GLMProvider(LLMProvider):
@@ -57,125 +62,11 @@ class GLMProvider(LLMProvider):
         **kwargs,
     ) -> LLMResponse:
         """Send a chat completion request - 使用 OpenAI 兼容格式."""
-        import aiohttp
-
         url = f"{self.base_url}/chat/completions"
 
-        # Convert messages to OpenAI format
-        openai_messages = []
-
-        for msg in messages:
-            # Handle both dict and LLMMessage objects
-            if isinstance(msg, dict):
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                tool_call_id = msg.get("tool_call_id")
-            else:
-                role = msg.role
-                content = msg.content
-                tool_call_id = getattr(msg, 'tool_call_id', None)
-            
-            if role == "system":
-                openai_messages.append({"role": "system", "content": content})
-            elif role == "user":
-                # Check if this is a tool result message
-                if isinstance(content, list):
-                    processed_content = []
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "tool_result":
-                            processed_content.append({
-                                "type": "tool_result",
-                                "tool_use_id": item.get("tool_use_id", tool_call_id or "unknown"),
-                                "content": item.get("content", ""),
-                            })
-                        else:
-                            processed_content.append(item)
-                    openai_messages.append({"role": "user", "content": processed_content})
-                else:
-                    openai_messages.append({"role": "user", "content": content})
-            elif role == "assistant":
-                # Handle assistant message with potential tool_calls
-                if isinstance(msg, dict) and "tool_calls" in msg:
-                    msg_content = content or ""
-                    tool_calls_list = msg.get("tool_calls", [])
-                    
-                    openai_msg = {"role": "assistant", "content": msg_content}
-                    
-                    # Add tool calls if present
-                    formatted_tool_calls = []
-                    for tc in tool_calls_list:
-                        if isinstance(tc, dict):
-                            tc_id = tc.get("id", "")
-                            func = tc.get("function", {})
-                            tc_name = func.get("name", "")
-                            tc_args = func.get("arguments", "")
-                        else:
-                            tc_id = tc.id
-                            tc_name = tc.name
-                            tc_args = tc.arguments
-                        
-                        if isinstance(tc_args, str):
-                            try:
-                                tc_args = json.loads(tc_args)
-                            except:
-                                tc_args = {}
-                        
-                        formatted_tool_calls.append({
-                            "id": tc_id,
-                            "type": "function",
-                            "function": {
-                                "name": tc_name,
-                                "arguments": json.dumps(tc_args),
-                            }
-                        })
-                    
-                    if formatted_tool_calls:
-                        openai_msg["tool_calls"] = formatted_tool_calls
-                    
-                    openai_messages.append(openai_msg)
-                else:
-                    openai_messages.append({"role": "assistant", "content": content})
-            elif role == "tool":
-                openai_messages.append({
-                    "role": "tool",
-                    "content": content,
-                    "tool_call_id": tool_call_id or "unknown",
-                })
-
-        # Convert tools to OpenAI function format
-        openai_tools = None
-        if tools:
-            openai_tools = []
-            for tool in tools:
-                if isinstance(tool, dict):
-                    if "function" in tool:
-                        func = tool.get("function", {})
-                        openai_tools.append({
-                            "type": "function",
-                            "function": {
-                                "name": func.get("name", ""),
-                                "description": func.get("description", ""),
-                                "parameters": func.get("parameters", {}),
-                            }
-                        })
-                    else:
-                        openai_tools.append({
-                            "type": "function",
-                            "function": {
-                                "name": tool.get("name", ""),
-                                "description": tool.get("description", ""),
-                                "parameters": tool.get("parameters", {}),
-                            }
-                        })
-                else:
-                    openai_tools.append({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.parameters,
-                        }
-                    })
+        # 使用基类方法转换消息和工具
+        openai_messages = self.convert_messages_openai(messages)
+        openai_tools = self.convert_tools_openai(tools)
 
         # Build request parameters
         payload = {
@@ -195,13 +86,6 @@ class GLMProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-
-        try:
-            import certifi
-            os.environ['SSL_CERT_FILE'] = certifi.where()
-            os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-        except Exception:
-            pass
 
         timeout = aiohttp.ClientTimeout(total=self.timeout)
 

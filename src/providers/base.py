@@ -68,6 +68,192 @@ class LLMProvider(ABC):
         """获取默认模型"""
         pass
 
+    def convert_messages_openai(self, messages: list) -> list[dict]:
+        """将消息转换为OpenAI格式"""
+        openai_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                tool_call_id = msg.get("tool_call_id")
+            else:
+                role = getattr(msg, "role", "user")
+                content = getattr(msg, "content", "")
+                tool_call_id = getattr(msg, "tool_call_id", None)
+            
+            if role == "user":
+                openai_messages.append({"role": "user", "content": content})
+            elif role == "assistant":
+                openai_messages.append({"role": "assistant", "content": content})
+            elif role == "system":
+                openai_messages.append({"role": "system", "content": content})
+            elif role == "tool":
+                openai_messages.append({
+                    "role": "tool",
+                    "content": content,
+                    "tool_call_id": tool_call_id,
+                })
+        return openai_messages
+
+    def convert_messages_anthropic(self, messages: list) -> tuple[list[dict], str]:
+        """将消息转换为Anthropic格式
+        
+        返回: (messages, system_prompt)
+        Anthropic将system消息单独提取为参数
+        """
+        anthropic_messages = []
+        system_prompt = None
+
+        for msg in messages:
+            if isinstance(msg, dict):
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                tool_call_id = msg.get("tool_call_id")
+            else:
+                role = getattr(msg, "role", "user")
+                content = getattr(msg, "content", "")
+                tool_call_id = getattr(msg, "tool_call_id", None)
+            
+            if role == "system":
+                system_prompt = content
+            elif role == "user":
+                if isinstance(content, list):
+                    processed_content = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "tool_result":
+                            processed_content.append({
+                                "type": "tool_result",
+                                "tool_use_id": item.get("tool_use_id", tool_call_id or "unknown"),
+                                "content": item.get("content", ""),
+                            })
+                        else:
+                            processed_content.append(item)
+                    anthropic_messages.append({"role": "user", "content": processed_content})
+                else:
+                    anthropic_messages.append({"role": "user", "content": content})
+            elif role == "assistant":
+                if isinstance(msg, dict) and "tool_calls" in msg:
+                    msg_content = content or ""
+                    tool_calls_list = msg.get("tool_calls", [])
+                    
+                    blocks = []
+                    if msg_content:
+                        blocks.append({"type": "text", "text": msg_content})
+                    
+                    for tc in tool_calls_list:
+                        if isinstance(tc, dict):
+                            tc_id = tc.get("id", "")
+                            # Debug: log tc_id
+                            if not tc_id:
+                                import uuid
+                                tc_id = f"toolu_{uuid.uuid4().hex[:8]}"
+                            func = tc.get("function", {})
+                            tc_name = func.get("name", "")
+                            tc_args = func.get("arguments", "")
+                        else:
+                            tc_id = getattr(tc, "id", "")
+                            tc_name = getattr(tc, "function", {}).get("name", "")
+                            tc_args = getattr(tc, "function", {}).get("arguments", "")
+                        
+                        # 确保 input 是字典类型
+                        if isinstance(tc_args, str):
+                            try:
+                                import json
+                                tc_args = json.loads(tc_args) if tc_args else {}
+                            except json.JSONDecodeError:
+                                tc_args = {}
+                        
+                        blocks.append({
+                            "type": "tool_use",
+                            "id": tc_id,
+                            "name": tc_name,
+                            "input": tc_args,
+                        })
+                    
+                    anthropic_messages.append({"role": "assistant", "content": blocks})
+                else:
+                    anthropic_messages.append({"role": "assistant", "content": content})
+            elif role == "tool":
+                # Tool result message - should be converted to user message with tool_result content
+                tool_use_id = msg.get("tool_use_id") or msg.get("tool_call_id", "unknown")
+                tool_content = content or ""
+                anthropic_messages.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": tool_content,
+                    }]
+                })
+        
+        return anthropic_messages, system_prompt or ""
+
+    def convert_tools_openai(self, tools: list) -> list[dict]:
+        """将工具转换为OpenAI格式"""
+        if not tools:
+            return None
+        
+        openai_tools = []
+        for tool in tools:
+            if isinstance(tool, dict):
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("parameters", {}),
+                    },
+                })
+            else:
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": getattr(tool, "name", ""),
+                        "description": getattr(tool, "description", ""),
+                        "parameters": getattr(tool, "parameters", {}),
+                    },
+                })
+        return openai_tools
+
+    def convert_tools_anthropic(self, tools: list) -> list[dict]:
+        """将工具转换为Anthropic格式
+        
+        支持两种输入格式:
+        1. OpenAI格式: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+        2. 直接格式: {"name": ..., "description": ..., "parameters": ...}
+        """
+        if not tools:
+            return None
+        
+        anthropic_tools = []
+        for tool in tools:
+            if isinstance(tool, dict):
+                # 检查是否是OpenAI格式 (包含 "function" 键)
+                if "function" in tool:
+                    func = tool.get("function", {})
+                    anthropic_tools.append({
+                        "name": func.get("name", ""),
+                        "description": func.get("description", ""),
+                        "input_schema": func.get("parameters", {}),
+                    })
+                else:
+                    # 直接格式
+                    anthropic_tools.append({
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "input_schema": tool.get("parameters", {}),
+                    })
+            else:
+                anthropic_tools.append({
+                    "name": getattr(tool, "name", ""),
+                    "description": getattr(tool, "description", ""),
+                    "input_schema": getattr(tool, "parameters", {}),
+                })
+        
+        # 过滤掉空工具
+        anthropic_tools = [t for t in anthropic_tools if t.get("name")]
+        return anthropic_tools if anthropic_tools else None
+
 
 class MockProvider(LLMProvider):
     """模拟 Provider - 用于测试"""

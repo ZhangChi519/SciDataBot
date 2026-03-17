@@ -1,16 +1,9 @@
-# Core module
-from .agent import GeneralAgent, ExecutionContext
-from .scheduler import TaskScheduler
-from .lane_scheduler import LaneScheduler, LaneConfig
-from .registry import ComponentRegistry
-from .context import DataContext
+"""Core module."""
+
+from src.core.main_agent import MainAgent
+from src.core.subagent import SubagentManager
 
 __all__ = [
-    "GeneralAgent",
-    "ExecutionContext",
-    "TaskScheduler",
-    "LaneScheduler",
-    "LaneConfig",
-    "ComponentRegistry",
-    "DataContext",
+    "MainAgent",
+    "SubagentManager",
 ]

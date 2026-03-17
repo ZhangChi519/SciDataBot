@@ -220,3 +220,77 @@ class WebFetchTool(Tool):
         text = re.sub(r'</(p|div|section|article)>', '\n\n', text, flags=re.I)
         text = re.sub(r'<(br|hr)\s*/?>', '\n', text, flags=re.I)
         return _normalize(_strip_tags(text))
+
+
+class BrowserTool(Tool):
+    """Browser automation tool using Playwright."""
+
+    name = "browser"
+    description = "Browser automation with Playwright - screenshot, click, fill, evaluate"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["screenshot", "click", "fill", "evaluate"]},
+                "url": {"type": "string", "description": "URL to interact with"},
+                "selector": {"type": "string", "description": "CSS selector"},
+                "value": {"type": "string", "description": "Value to fill (for fill operation)"},
+                "script": {"type": "string", "description": "JavaScript to evaluate (for evaluate operation)"}
+            },
+            "required": ["operation", "url"]
+        }
+
+    async def execute(self, operation: str, url: str, selector: str = None, value: str = None, script: str = None, **kwargs) -> str:
+        """Execute browser operation."""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return json.dumps({"error": "Playwright not installed. Install with: pip install playwright"})
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch()
+                page = await browser.new_page()
+                await page.goto(url)
+
+                if operation == "screenshot":
+                    if selector:
+                        element = await page.query_selector(selector)
+                        if element:
+                            screenshot = await element.screenshot()
+                        else:
+                            return json.dumps({"error": "Selector not found"})
+                    else:
+                        screenshot = await page.screenshot()
+                    import base64
+                    b64 = base64.b64encode(screenshot).decode()
+                    return json.dumps({"url": url, "screenshot": f"data:image/png;base64,{b64}"})
+
+                elif operation == "click":
+                    if not selector:
+                        return json.dumps({"error": "selector required for click"})
+                    await page.click(selector)
+                    await browser.close()
+                    return json.dumps({"clicked": selector})
+
+                elif operation == "fill":
+                    if not selector or not value:
+                        return json.dumps({"error": "selector and value required for fill"})
+                    await page.fill(selector, value)
+                    await browser.close()
+                    return json.dumps({"filled": selector, "value": value})
+
+                elif operation == "evaluate":
+                    if not script:
+                        return json.dumps({"error": "script required for evaluate"})
+                    result = await page.evaluate(script)
+                    await browser.close()
+                    return json.dumps({"result": result})
+
+                await browser.close()
+                return json.dumps({"error": f"Unknown operation: {operation}"})
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})

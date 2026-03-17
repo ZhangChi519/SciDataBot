@@ -36,27 +36,84 @@ def get_prefix():
 
 
 async def run_simple_tui(scheduler, config_path=None):
-    """运行 TUI (新架构 - 自动识别任务)"""
+    """运行 TUI (服务模式 - 支持 subagent)"""
+    from src.bus.events import InboundMessage, OutboundMessage
+    
     print_welcome("auto")
-
-    print("\033[1;32m系统就绪！输入您的问题:\033[0m")
+    
+    print("\033[1;32m系统就绪！输入您的问题 (输入 exit 退出):\033[0m")
+    print("\033[90m模式: 服务模式 (支持后台任务)\033[0m")
     print()
+    
+    # 用于标记是否正在处理任务
+    is_processing = False
+    agent_running = False
+    
+    async def output_listener():
+        """监听 outbound bus 并显示结果"""
+        nonlocal is_processing
+        while True:
+            try:
+                msg = await asyncio.wait_for(scheduler.bus.consume_outbound(), timeout=0.5)
+                if msg and isinstance(msg, OutboundMessage):
+                    print()
+                    print("\033[1;33m回复:\033[0m")
+                    print(msg.content)
+                    print()
+                    print("\033[1;36m" + "-" * 60 + "\033[0m")
+                    print()
+                    is_processing = False
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                break
+    
+    # 启动输出监听任务
+    output_task = asyncio.create_task(output_listener())
+    
+    # 启动 agent 在后台任务
+    async def run_agent():
+        nonlocal agent_running
+        agent_running = True
+        await scheduler.run()
+    
+    agent_task = asyncio.create_task(run_agent())
+    
+    # 等待 agent 启动
+    await asyncio.sleep(0.5)
+    
+    try:
+        while True:
+            # 启用 readline 以改善输入体验
+            try:
+                import readline
+            except ImportError:
+                pass
+            
+            # 设置中文编码
+            import sys
+            import io
+            if sys.stdout.encoding != 'utf-8':
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+            
+            # 等待用户输入（在线程中执行，避免阻塞事件循环）
+            if is_processing:
+                print("\033[90m[处理中...] 输入新消息或等待回复\033[0m ", end="", flush=True)
+            else:
+                print("[SciDataBot] ", end="", flush=True)
 
-    while True:
-        try:
-            # 显示提示符 (新架构)
-            print("[SciDataBot] ", end="", flush=True)
-            message = input()
-
+            try:
+                loop = asyncio.get_event_loop()
+                message = await loop.run_in_executor(None, input)
+            except (KeyboardInterrupt, EOFError):
+                print("\n\033[1;31m退出程序\033[0m")
+                break
+            
             if not message.strip():
                 continue
-
+            
             # 处理命令
             msg = message.strip().lower()
-            
-            # 移除 /mode 命令 - 现在自动判断
-            # if msg == "/mode":
-            #     ...
             
             if msg == "/help":
                 os.system('clear' if os.name == 'posix' else 'cls')
@@ -67,38 +124,53 @@ async def run_simple_tui(scheduler, config_path=None):
                 os.system('clear' if os.name == 'posix' else 'cls')
                 print_welcome()
                 print("\033[1;33m正在启动配置向导...\033[0m\n")
-                await run_connect(config_path)
-                print()
+                new_config = await run_connect(config_path)
+                # Hot-reload: 用新配置重建 provider 并更新 scheduler
+                if new_config:
+                    try:
+                        from src.cli import create_llm_provider
+                        new_provider = create_llm_provider(new_config)
+                        scheduler.provider = new_provider
+                        new_llm = new_config.get("llm", {})
+                        new_prov_type = new_llm.get("provider", "minimax")
+                        new_model = new_llm.get(new_prov_type, {}).get("model", scheduler.model)
+                        scheduler.model = new_model
+                        # 同步更新 subagent_manager 中的 provider / model
+                        if hasattr(scheduler, "subagent_manager"):
+                            scheduler.subagent_manager.provider = new_provider
+                            scheduler.subagent_manager.model = new_model
+                        print(f"\033[1;32m✓ 新配置已生效：{new_prov_type} / {new_model}\033[0m\n")
+                    except Exception as _e:
+                        print(f"\033[1;31m热重载失败，请重启 scidatabot：{_e}\033[0m\n")
                 continue
             
             if msg in ["exit", "quit", "/quit", "/exit"]:
                 print("\n\033[1;31m再见！\033[0m")
                 break
+            
+            # 等待当前任务完成
+            if is_processing:
+                print("\033[90m等待当前任务完成...\033[0m")
+                continue
+            
+            # 发送到 bus
+            is_processing = True
+            inbound_msg = InboundMessage(
+                channel="tui",
+                sender_id="user",
+                chat_id="direct",
+                content=message,
+            )
+            await scheduler.bus.publish_inbound(inbound_msg)
 
-            # 构建完整消息 (新架构不需要前缀)
-            full_message = message
-
-            # 处理消息
-            print("\033[90m处理中...\033[0m")
-
-            try:
-                result = await scheduler.execute(full_message)
-                response = result.get("final_report", "任务完成")
-            except Exception as e:
-                response = f"错误: {str(e)}"
-
-            print()
-            print("\033[1;33m回复:\033[0m")
-            print(response)
-            print()
-            print("\033[1;36m" + "-" * 60 + "\033[0m")
-            print()
-
-        except KeyboardInterrupt:
-            print("\n\n\033[1;31m退出程序\033[0m")
-            break
-        except EOFError:
-            break
+    except KeyboardInterrupt:
+        print("\n\033[1;31m退出程序\033[0m")
+    except EOFError:
+        pass
+    finally:
+        scheduler.stop()
+        output_task.cancel()
+        agent_task.cancel()
 
 
 async def run_connect(config_path=None):
@@ -115,7 +187,7 @@ async def run_connect(config_path=None):
         },
         "minimax": {
             "default": "MiniMax-M2.5",
-            "options": ["MiniMax-M2.5", "abab6.5s-chat"],
+            "options": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
         },
         "glm": {
             "default": "glm-4-flash",
@@ -129,7 +201,7 @@ async def run_connect(config_path=None):
     
     # 加载现有配置
     if config_path is None:
-        config_path = Path(__file__).parent.parent / "config.yaml"
+        config_path = Path(__file__).parent.parent.parent / "config.yaml"
     else:
         config_path = Path(config_path)
     
@@ -173,10 +245,21 @@ async def run_connect(config_path=None):
     
     # 获取当前 provider 的 API key
     provider_key = config_data.get("llm", {}).get(provider, {}).get("api_key", "")
-    
-    api_key = input(f"API Key (env: {env_var}) [默认已保存的]: ").strip()
+    saved_key = provider_key or current_key
+
+    # 显示已保存 key 的前8位和后4位，帮助用户确认是否正确
+    if saved_key and len(saved_key) > 12:
+        key_hint = f"{saved_key[:8]}...{saved_key[-4:]}"
+    elif saved_key:
+        key_hint = saved_key
+    else:
+        key_hint = "未设置"
+    print(f"当前已保存: {key_hint}")
+
+    api_key = input(f"输入新 API Key (直接回车=保留当前值): ").strip()
     if not api_key:
-        api_key = provider_key or current_key
+        api_key = saved_key
+        print(f"已保留当前 key: {key_hint}")
     
     # 获取模型
     model_info = PROVIDER_MODELS.get(provider, {"default": "gpt-4o"})
@@ -234,13 +317,14 @@ async def run_connect(config_path=None):
     # 保存配置
     with open(config_path, "w") as f:
         yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
-    
+
     print(f"\n\033[1;32m✓ 配置已保存到 {config_path}\033[0m")
     print(f"\nProvider: {provider}")
     print(f"Model: {model}")
     print(f"Temperature: {temperature}")
     print(f"Max tokens: {max_tokens}")
-    print("\n\033[1;33m请重新启动 scidatabot 以使用新配置\033[0m")
+
+    return config_data
 
 
 async def main():
@@ -270,7 +354,7 @@ async def main():
         response = input("   确认执行? (y/n): ")
         return response.lower() in ("y", "yes")
     
-    scheduler = create_app(config, confirm_callback=auto_confirm)
+    scheduler = create_app(config)
 
     await run_simple_tui(scheduler, str(Path(__file__).parent.parent / "config.yaml"))
 

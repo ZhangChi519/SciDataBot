@@ -1,25 +1,10 @@
 agent:
   max_iterations: 40
   name: scidatabot
-  system_prompt: 'You are scidatabot, a professional scientific data assistant.
-
-
-    Your capabilities include:
-
-    - Understanding scientific data structures
-
-    - Analyzing data quality
-
-    - Processing and transforming data
-
-    - Data integration and alignment
-
-    - Statistical analysis
-
-
-    Use available tools to complete user requests.
-
-    '
+  system_prompt: 'You are scidatabot, a professional scientific data assistant. Your
+    capabilities include: - Understanding scientific data structures - Analyzing data
+    quality - Processing and transforming data - Data integration and alignment -
+    Statistical analysis Use available tools to complete user requests. '
   timeout: 300
 channel:
   feishu:
@@ -36,62 +21,58 @@ channel:
     port: 8080
 host: 0.0.0.0
 llm:
-  # 可选: openai, anthropic, minimax, glm, custom
-  provider: minimax
-
-  # Anthropic 配置 (备选)
   anthropic:
-    api_key: "your-anthropic-api-key"
-    model: "claude-sonnet-4-20250514"
-    base_url: "https://api.anthropic.com"
-    temperature: 0.7
+    api_key: '1'
+    base_url: https://api.anthropic.com
     max_tokens: 4096
+    model: '1'
+    temperature: 0.7
+  boyuerichdata:
+    api_key: your-boyuerichdata-api-key
+    base_url: http://35.220.164.252:3888
+    max_tokens: 4096
+    model: claude-sonnet-4-6
+    temperature: 0.7
     timeout: 300
-    max_retries: 3
-
-  # GLM 配置 (备选)
-  glm:
-    api_key: "your-glm-api-key"
-    model: "glm-4-flash"
-    base_url: "https://open.bigmodel.cn/api/paas/v4"
-    temperature: 0.7
-    max_tokens: 4096
-    timeout: 60
-
-  # Custom 配置 (自定义 OpenAI 兼容 API)
   custom:
-    api_key: "your-custom-api-key"
-    model: "gpt-4o"
-    base_url: ""  # 如 https://api.openai.com/v1
-    temperature: 0.7
+    api_key: your-custom-api-key
+    base_url: ''
     max_tokens: 4096
+    model: gpt-4o
+    temperature: 0.7
     timeout: 60
-
-  # MiniMax 配置 (推荐) - 使用 Anthropic 兼容格式
+  glm:
+    api_key: your-glm-api-key
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    max_tokens: 4096
+    model: glm-4-flash
+    temperature: 0.7
+    timeout: 60
   minimax:
-    api_key: "sk-cp-kvwFXiy6b1uz9VO1f_mlWmK9kKrP8Nuj9vrZSkUIpT9BDomWxVhLJwMlg6Dat32vMEYOeQSuFBAwlBXlMHjsL-HoDcbIjyokQUMApXwBuyW6IHifHynvM0M"
-    # 可用模型: MiniMax-M2.5
-    model: "MiniMax-M2.5"
-    # Anthropic 兼容端点
-    base_url: "https://api.minimaxi.com/anthropic"
-    temperature: 0.7
+    api_key: sk-cp-kvwFXiy6b1uz9VO1f_mlWmK9kKrP8Nuj9vrZSkUIpT9BDomWxVhLJwMlg6Dat32vMEYOeQSuFBAwlBXlMHjsL-HoDcbIjyokQUMApXwBuyW6IHifHynvM0M
+    base_url: https://api.minimaxi.com/anthropic
     max_tokens: 4096
-    timeout: 60
-
-  # OpenAI 配置 (备选)
+    model: MiniMax-M2.5
+    temperature: 0.7
   openai:
-    api_key: "your-openai-api-key"
-    model: "gpt-4o"
-    base_url: null  # 可自定义代理地址
-    temperature: 0.7
+    api_key: your-openai-api-key
+    base_url: null
     max_tokens: 4096
+    model: gpt-4o
+    temperature: 0.7
     timeout: 60
+  provider: minimax
 logging:
   format: '{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}'
   level: INFO
+memory:
+  enabled: true
+  memory_window: 50
+  workspace: ./workspace/memory
 port: 8080
 session:
   max_sessions: 100
+  storage_path: ./workspace/sessions
   ttl: 3600
 storage:
   path: ./data/storage
@@ -108,4 +89,4 @@ tools:
     brave_api_key: ''
     max_redirects: 5
     timeout: 30
-workspace: ./workspace
+workspace: ~/.scidatabot

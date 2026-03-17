@@ -7,8 +7,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-from loguru import logger
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 from src.tools.base import Tool, ToolResult
 

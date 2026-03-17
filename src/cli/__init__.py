@@ -11,9 +11,9 @@ from loguru import logger
 
 from ..config import Config, ConfigManager
 from ..channels import ChannelManager, ChannelType
-from ..core.agent import GeneralAgent
 from ..providers import OpenAIProvider, AnthropicProvider, MockProvider, MiniMaxProvider, GLMProvider
 from ..tools import ToolRegistry
+from ..core.main_agent import MainAgent
 
 app = typer.Typer(help="scidatabot - 科学数据智能助手")
 
@@ -76,6 +76,7 @@ def create_llm_provider(config: dict):
                 temperature=mm_config.get("temperature", 0.7),
                 max_tokens=mm_config.get("max_tokens", 4096),
                 timeout=mm_config.get("timeout", 60),
+                verify_ssl=False,  # 禁用 SSL 验证（解决证书问题）
             )
         else:
             # 使用旧版 OpenAI 兼容格式
@@ -87,7 +88,25 @@ def create_llm_provider(config: dict):
                 temperature=mm_config.get("temperature", 0.7),
                 max_tokens=mm_config.get("max_tokens", 4096),
                 timeout=mm_config.get("timeout", 60),
+                verify_ssl=False,  # 禁用 SSL 验证
             )
+
+    elif provider_type == "boyuerichdata":
+        boyuerichdata_config = config.get("llm", {}).get("boyuerichdata", {})
+        api_key = boyuerichdata_config.get("api_key") or os.environ.get("BOYUERICHDATA_API_KEY")
+        if not api_key:
+            typer.echo("Warning: boyuerichdata API key not set, using MockProvider")
+            return MockProvider(model="mock")
+
+        return AnthropicProvider(
+            api_key=api_key,
+            model=boyuerichdata_config.get("model", "claude-sonnet-4-6-thinking"),
+            base_url=boyuerichdata_config.get("base_url"),
+            temperature=boyuerichdata_config.get("temperature", 0.7),
+            max_tokens=boyuerichdata_config.get("max_tokens", 4096),
+            timeout=boyuerichdata_config.get("timeout", 300),
+            max_retries=boyuerichdata_config.get("max_retries", 3),
+        )
 
     elif provider_type == "anthropic":
         ant_config = config.get("llm", {}).get("anthropic", {})
@@ -193,21 +212,11 @@ def run(
     workspace = Path(workspace_path)
     workspace.mkdir(parents=True, exist_ok=True)
 
-    # Create TaskScheduler (same as main.py)
-    from ..core.scheduler import TaskScheduler
-    from ..core.lane_scheduler import LaneScheduler, LaneConfig
-    from ..tools.data_access import FormatDetector, MetadataExtractor, QualityAssessor, WeatherTool
-    from ..tools.intent_parser import IntentClassifier, PlanningGenerator
+    # Create MainAgent (new architecture)
+    from ..tools.data_access import FormatDetector, MetadataExtractor, QualityAssessor
+    from ..tools.general import WeatherTool
     from ..tools.data_processing import DataExtractor, DataTransformer, DataCleaner, StatisticsAnalyzer
     from ..tools.data_integration import TemporalAligner, SpatialAligner, DataExporter
-
-    # Create Lane scheduler
-    lane_scheduler = LaneScheduler()
-    lane_scheduler.register_lane(LaneConfig("main", max_concurrent=1, timeout=300))
-    lane_scheduler.register_lane(LaneConfig("cron", max_concurrent=2, timeout=600))  # 定时任务
-    lane_scheduler.register_lane(LaneConfig("subagent", max_concurrent=8, timeout=300))
-    lane_scheduler.register_lane(LaneConfig("nested", max_concurrent=4, timeout=300))  # 嵌套任务
-    lane_scheduler.register_lane(LaneConfig("event", max_concurrent=1, timeout=60))  # 事件驱动任务
 
     # Create tool registry with all tools
     tool_registry = ToolRegistry()
@@ -216,20 +225,33 @@ def run(
     tool_registry.register(FormatDetector(), "data_access")
     tool_registry.register(MetadataExtractor(), "data_access")
     tool_registry.register(QualityAssessor(), "data_access")
-    tool_registry.register(WeatherTool(), "data_access")
 
     # Register general tools (web search, etc.)
     from src.tools.general import WebSearchTool, WebFetchTool
+    tool_registry.register(WeatherTool(), "general")
     web_config = config_data.get("tools", {}).get("web", {})
     tool_registry.register(
         WebSearchTool(api_key=web_config.get("brave_api_key")),
         "general"
     )
     tool_registry.register(WebFetchTool(), "general")
+    
+    # Register filesystem tools
+    from src.tools.general.filesystem import ReadFileTool, WriteFileTool, ListDirTool, EditFileTool
+    from src.tools.general.shell import ExecTool
+    from src.tools.general.spawn import SpawnTool
+    from src.tools.general.cron import CronTool
+    from src.tools.data_processing.mat_extractor import MatFileExtractor
+    tool_registry.register(ReadFileTool(workspace=workspace, allowed_dir=workspace), "general")
+    tool_registry.register(WriteFileTool(workspace=workspace, allowed_dir=workspace), "general")
+    tool_registry.register(EditFileTool(workspace=workspace, allowed_dir=workspace), "general")
+    tool_registry.register(ListDirTool(workspace=workspace, allowed_dir=workspace), "general")
+    tool_registry.register(ExecTool(), "general")
+    tool_registry.register(SpawnTool(), "general")
+    tool_registry.register(CronTool(), "general")
+    tool_registry.register(MatFileExtractor(), "data_processing")
 
-    # Register intent parser tools
-    tool_registry.register(IntentClassifier(), "intent_parser")
-    tool_registry.register(PlanningGenerator(), "intent_parser")
+    # Note: Intent recognition moved to LLM (in MainAgent system prompt)
 
     # Register data processing tools
     tool_registry.register(DataExtractor(), "data_processing")
@@ -277,19 +299,24 @@ def run(
         response = typer.prompt("   确认执行? (y/n)", default="n")
         return response.lower() in ("y", "yes")
 
-    # Create scheduler
-    scheduler = TaskScheduler(
+    # Create MainAgent (new architecture)
+    model_name = model or config_data.get("llm", {}).get(provider_name, {}).get("model", "abab6.5s-chat")
+    agent = MainAgent(
         provider=llm,
         workspace=workspace,
+        model=model_name,
+        max_iterations=40,
         tool_registry=tool_registry,
-        lane_scheduler=lane_scheduler,
-        confirm_callback=confirm_dangerous_tool,
     )
 
-    # Message handler - use scheduler
+    # Register tools with agent
+    for tool in tool_registry._tools.values():
+        agent.register_tool(tool)
+
+    # Message handler - use agent
     async def handle_message(message):
-        result = await scheduler.execute(message.content)
-        return result.get("final_report", "任务完成")
+        result = await agent.execute(message.content)
+        return result.get("result", "任务完成")
 
     channel_manager.set_global_handler(handle_message)
 
@@ -432,11 +459,15 @@ PROVIDER_MODELS = {
     },
     "minimax": {
         "default": "MiniMax-M2.5",
-        "options": ["MiniMax-M2.5", "abab6.5s-chat"],
+        "options": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
     },
     "glm": {
         "default": "glm-4-flash",
         "options": ["glm-4-flash", "glm-4-plus", "glm-4v", "glm-3-turbo"],
+    },
+    "boyuerichdata": {
+        "default": "claude-sonnet-4-6-thinking",
+        "options": ["claude-sonnet-4-6-thinking"],
     },
     "custom": {
         "default": "custom",
@@ -448,8 +479,13 @@ PROVIDER_MODELS = {
 @app.command("connect")
 def connect(
     config_path: Annotated[Optional[str], typer.Option("--config", "-c", help="Config file path")] = None,
+    provider: Annotated[Optional[str], typer.Option("--provider", "-p", help="Provider: anthropic, minimax, glm")] = None,
+    api_key: Annotated[Optional[str], typer.Option("--api-key", "-k", help="API key")] = None,
+    model: Annotated[Optional[str], typer.Option("--model", "-m", help="Model name")] = None,
+    temperature: Annotated[Optional[float], typer.Option("--temperature", "-t", help="Temperature (0.0-1.0)")] = None,
+    max_tokens: Annotated[Optional[int], typer.Option("--max-tokens", help="Max tokens")] = None,
 ):
-    """Configure API settings interactively."""
+    """Configure API settings interactively or via arguments."""
     from pathlib import Path
     import yaml
 
@@ -471,98 +507,112 @@ def connect(
     current_provider = config_data.get("llm", {}).get("provider", "minimax")
     typer.echo(f"Current provider: {current_provider}\n")
     
-    # Show provider options
-    typer.echo("Available providers:")
-    typer.echo("  1. anthropic  - Anthropic Claude API")
-    typer.echo("  2. minimax   - MiniMax API")
-    typer.echo("  3. glm       - Zhipu AI (GLM) API")
-    typer.echo("")
-    
-    # Get provider choice
-    provider_choice = typer.prompt(
-        "Select provider (1-3)",
-        default="2",
-        show_default=False,
-    )
-    
-    provider_map = {"1": "anthropic", "2": "minimax", "3": "glm"}
-    provider = provider_map.get(provider_choice, "minimax")
-    
-    typer.echo(f"\nSelected: {provider}")
-    
-    # Get API key
-    env_var_map = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "minimax": "MINIMAX_API_KEY",
-        "glm": "ZHIPU_API_KEY",
-    }
-    env_var = env_var_map.get(provider, "API_KEY")
-    config_key = config_data.get("llm", {}).get(provider, {}).get("api_key", "")
-    current_key = os.environ.get(env_var, "") or config_key
-    
-    # Mask the API key for display
-    display_key = current_key[:10] + "..." if current_key else ""
-    
-    api_key = typer.prompt(
-        f"API Key (env: {env_var})",
-        default=current_key,
-        show_default=bool(current_key),
-        hide_input=True,
-    )
-    
-    if not api_key:
-        api_key = current_key
-    
-    # Get model
-    model_info = PROVIDER_MODELS.get(provider, {"default": "gpt-4o"})
-    default_model = model_info["default"]
-    options = model_info.get("options", [])
-    
-    if options:
-        typer.echo(f"\nAvailable models: {', '.join(options)}")
-        model = typer.prompt("Model", default=default_model)
+    # 如果提供了所有必要参数，使用命令行模式
+    if provider and api_key and model:
+        # 命令行模式
+        selected_provider = provider
+        selected_api_key = api_key
+        selected_model = model
+        selected_temp = temperature if temperature is not None else 0.7
+        selected_tokens = max_tokens if max_tokens else 4096
     else:
-        model = default_model
-    
-    # Get temperature
-    temp_input = typer.prompt("Temperature (0.0-1.0)", default="0.7", show_default=False)
-    try:
-        temperature = float(temp_input)
-    except ValueError:
-        temperature = 0.7
-    
-    # Get max tokens
-    tokens_input = typer.prompt("Max tokens", default="4096", show_default=False)
-    try:
-        max_tokens = int(tokens_input)
-    except ValueError:
-        max_tokens = 4096
+        # 交互式模式
+        # Show provider options
+        typer.echo("Available providers:")
+        typer.echo("  1. anthropic       - Anthropic Claude API")
+        typer.echo("  2. minimax        - MiniMax API")
+        typer.echo("  3. glm            - Zhipu AI (GLM) API")
+        typer.echo("  4. boyuerichdata  - BoyueRichData API")
+        typer.echo("")
+        
+        # Get provider choice
+        provider_choice = typer.prompt(
+            "Select provider (1-4)",
+            default="4",
+            show_default=False,
+        )
+        
+        provider_map = {"1": "anthropic", "2": "minimax", "3": "glm", "4": "boyuerichdata"}
+        selected_provider = provider_map.get(provider_choice, "boyuerichdata")
+        
+        typer.echo(f"\nSelected: {selected_provider}")
+        
+        # Get API key
+        env_var_map = {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "minimax": "MINIMAX_API_KEY",
+            "glm": "ZHIPU_API_KEY",
+            "boyuerichdata": "BOYUERICHDATA_API_KEY",
+        }
+        env_var = env_var_map.get(selected_provider, "API_KEY")
+        config_key = config_data.get("llm", {}).get(selected_provider, {}).get("api_key", "")
+        current_key = os.environ.get(env_var, "") or config_key
+        
+        # Mask the API key for display
+        display_key = current_key[:10] + "..." if current_key else ""
+        
+        selected_api_key = typer.prompt(
+            f"API Key (env: {env_var})",
+            default=current_key,
+            show_default=bool(current_key),
+            hide_input=True,
+        )
+        
+        if not selected_api_key:
+            selected_api_key = current_key
+        
+        # Get model
+        model_info = PROVIDER_MODELS.get(selected_provider, {"default": "gpt-4o"})
+        default_model = model_info["default"]
+        options = model_info.get("options", [])
+        
+        if options:
+            typer.echo(f"\nAvailable models: {', '.join(options)}")
+            selected_model = typer.prompt("Model", default=default_model)
+        else:
+            selected_model = default_model
+        
+        # Get temperature
+        temp_input = typer.prompt("Temperature (0.0-1.0)", default="0.7", show_default=False)
+        try:
+            selected_temp = float(temp_input)
+        except ValueError:
+            selected_temp = 0.7
+        
+        # Get max tokens
+        tokens_input = typer.prompt("Max tokens", default="4096", show_default=False)
+        try:
+            selected_tokens = int(tokens_input)
+        except ValueError:
+            selected_tokens = 4096
     
     # Update config
-    config_data["llm"]["provider"] = provider
+    config_data["llm"]["provider"] = selected_provider
     
-    config_data["llm"][provider] = {
-        "api_key": api_key,
-        "model": model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
+    config_data["llm"][selected_provider] = {
+        "api_key": selected_api_key,
+        "model": selected_model,
+        "temperature": selected_temp,
+        "max_tokens": selected_tokens,
     }
-    if provider == "minimax":
-        config_data["llm"][provider]["base_url"] = "https://api.minimaxi.com/anthropic"
-    elif provider == "anthropic":
-        config_data["llm"][provider]["base_url"] = "https://api.anthropic.com"
-    elif provider == "glm":
-        config_data["llm"][provider]["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
+    if selected_provider == "minimax":
+        config_data["llm"][selected_provider]["base_url"] = "https://api.minimaxi.com/anthropic"
+    elif selected_provider == "anthropic":
+        config_data["llm"][selected_provider]["base_url"] = "https://api.anthropic.com"
+    elif selected_provider == "glm":
+        config_data["llm"][selected_provider]["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
+    elif selected_provider == "boyuerichdata":
+        config_data["llm"][selected_provider]["base_url"] = "http://35.220.164.252:3888"
     
     # Save config
     with open(cfg_path, "w") as f:
         yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
     
     typer.echo(f"\n✓ Configuration saved to {cfg_path}")
-    typer.echo(f"\nProvider: {provider}")
-    typer.echo(f"Model: {model}")
-    typer.echo(f"Temperature: {temperature}")
-    typer.echo(f"Max tokens: {max_tokens}")
+    typer.echo(f"\nProvider: {selected_provider}")
+    typer.echo(f"Model: {selected_model}")
+    typer.echo(f"Temperature: {selected_temp}")
+    typer.echo(f"Max tokens: {selected_tokens}")
     typer.echo("\nRestart scidatabot to use the new configuration.")
     typer.echo("Run: scidatabot run --config " + cfg_path)
 

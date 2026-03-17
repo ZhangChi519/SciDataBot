@@ -1,198 +1,275 @@
-# scidatabot
+# SciDataBot
 
-科学数据智能助手 - 基于多智能体架构的科学数据处理系统
+> **面向通用科学数据准备的智能体系统** —— 一句话完成跨学科、多模态科学数据集建设。
 
-## 特性
+## 研发背景
 
-- **多智能体架构**: 意图解析、数据接入、数据处理、数据整合
-- **可扩展工具集**: 工具按类别组织，易于扩展
-- **Lane 并发调度**: 支持真正并行处理
-- **多渠道支持**: 控制台、Telegram、飞书、Webhook
-- **通用 Agent**: Agent 本身是通用的，通过组合不同工具集实现不同功能
-- **多 LLM 提供商**: 支持 OpenAI、Anthropic、MiniMax
+Openclaw、Nanobot 等项目以 **ReAct 循环**（Reasoning + Acting）为执行引擎，深度整合记忆（Memory）、工具（Tools）、技能（Skills）三大核心能力，彻底解决传统智能体场景单一、扩展性差、无法自主运行的痛点，是目前工业界和学术界主流的通用 Agent 实现方案之一。
 
-## 环境要求
+## 研发目标
 
-- Python 3.10+
-- pip
+开发面向通用科学数据准备的智能体系统，实现**一句话数据准备能力**，支撑跨学科、多模态科学数据集建设。
 
-## 安装
+SciDataBot 引入 ReAct 循环机制并设计高通量并发智能体架构，具备通用数据处理能力，核心特点：
 
-```bash
-cd scidatabot
+| 特点 | 说明 |
+|------|------|
+| **高通量数据并行处理** | TaskPlanner 自动将批量任务分解为 N 条独立流水线并发执行，突破单线程处理瓶颈 |
+| **多智能体协作架构** | MainAgent → TaskPlanner → N × Processor → Integrator 四层分工，各 Agent 异步解耦 |
+| **SciDataCopilot Workflow** | 内置数据接入→质检→处理→整合→导出完整链路，一句话触发全流程 |
+| **本地轻量化常驻部署** | 基于消息总线的事件驱动架构，支持全时在线、Cron 定时任务、多渠道接入 |
 
-# 创建虚拟环境
-python3 -m venv .venv
+## 系统架构
 
-# 激活虚拟环境
-source .venv/bin/activate
-
-# 安装依赖 (需要取消设置 SOCKS 代理)
-unset ALL_PROXY all_proxy
-pip install loguru typer textual openai anthropic aiohttp aiofiles asyncpg aiomysql openpyxl pyarrow netCDF4 h5py pyyaml psutil croniter
-
-# 或安装所有依赖
-pip install -e ".[all]"
-```
-
-## 配置
-
-配置文件为 `config.yaml`，主要配置项：
-
-### LLM Provider 配置
-
-```yaml
-llm:
-  # 可选: openai, anthropic, minimax
-  provider: minimax
-
-  minimax:
-    api_key: "your-minimax-api-key"
-    model: "MiniMax-M2.5"
-    base_url: "https://api.minimax.chat/v1"
-    temperature: 0.7
-    max_tokens: 4096
-```
-
-### Agent 配置
-
-```yaml
-agent:
-  name: "scidatabot"
-  max_iterations: 40
-  timeout: 300
-```
-
-### 渠道配置
-
-```yaml
-channel:
-  # 可选: console, telegram, feishu, webhook
-  type: console
-```
-
-## 运行
-
-### 命令行模式
-
-```bash
-# 使用虚拟环境中的 Python
-unset ALL_PROXY all_proxy
-.venv/bin/python -m src.main "你的请求"
-
-# 例如
-.venv/bin/python -m src.main "分析 PM2.5 数据"
-```
-
-### TUI 模式
-
-```bash
-.venv/bin/python tui.py
-```
-
-### 使用启动脚本
-
-```bash
-# 需要先确保 .venv/bin/python 存在
-./scidatabot.sh "你的请求"
-
-# TUI 模式
-./scidatabot.sh --tui
-```
-
-## 架构
+### ReAct 执行引擎
 
 ```
-用户请求
-    │
-    ▼
-TaskScheduler (任务调度器)
-    ├── 意图分类 (Intent Classifier)
-    ├── 任务分解 (Planning Generator)
-    ├── 执行调度 (Lane Scheduler)
-    │   ├── main: 主任务
-    │   ├── cron: 定时任务
-    │   ├── subagent: 子代理
-    │   └── nested: 嵌套任务
-    └── 结果聚合
+用户一句话请求
+       │
+       ▼
+  MainAgent ── ReAct 循环（Reasoning + Acting，最多 40 次迭代）
+       │
+       ├── 简单任务 ──────────────→ 直接调用工具返回结果
+       │                            （read_file / exec / web_search …）
+       │
+       └── 复杂数据任务 ──→ spawn
+                               │
+                               ▼
+                         TaskPlanner
+                         （推理任务边界，输出并行 Pipeline JSON）
+                               │
+                  ┌────────────┼────────────┐
+                  ▼            ▼            ▼
+             Processor-1  Processor-2  Processor-N   ← 高通量并行
+                  │            │            │
+                  └────────────┴────────────┘
+                               │
+                               ▼
+                          Integrator
+                      （汇总结果，生成报告）
+                               │
+                               ▼
+                             用户
 ```
 
-## 工具类别
+### 消息总线与事件驱动
 
-### data_access (数据接入)
-- `detect_format`: 格式检测
-- `extract_metadata`: 元数据提取
-- `assess_quality`: 质量评估
-- `weather`: 天气数据获取
-
-### intent_parser (意图解析)
-- `classify_intent`: 意图分类
-- `generate_plan`: 规划生成
-
-### data_processing (数据处理)
-- `extract_data`: 数据抽取
-- `transform_data`: 数据转换
-- `clean_data`: 数据清洗
-- `analyze_statistics`: 统计分析
-- `extract_mat_files`: MATLAB 文件提取
-
-### data_integration (数据整合)
-- `align_temporal`: 时间对齐
-- `align_spatial`: 空间对齐
-- `export_data`: 数据导出
-
-### general (通用工具)
-- `filesystem`: 文件系统操作
-- `shell`: Shell 命令执行
-- `web`: Web 请求
-- `cron`: 定时任务
-
-## 代码示例
-
-```python
-import asyncio
-from scidatabot.src.main import create_app
-import yaml
-
-async def main():
-    # 加载配置
-    with open("config.yaml") as f:
-        config = yaml.safe_load(f)
-    
-    # 创建应用
-    scheduler = create_app(config)
-    
-    # 执行请求
-    result = await scheduler.execute("分析 PM2.5 数据")
-    print(result.get("final_report"))
-
-asyncio.run(main())
 ```
+┌─────────────┐    InboundMessage     ┌──────────────┐
+│  TUI / CLI  │ ──────────────────→  │  MessageBus  │
+│  Feishu Bot │                       │  (双队列)    │
+│  Webhook    │ ←──────────────────  │              │
+└─────────────┘    OutboundMessage    └──────┬───────┘
+                                             │
+                                      ┌──────▼───────┐
+                                      │  MainAgent   │
+                                      │  (ReAct核心) │
+                                      └──────┬───────┘
+                                             │
+                              ┌──────────────▼──────────────┐
+                              │       SubagentManager        │
+                              │  (asyncio Task 并发调度)     │
+                              └─────────────────────────────┘
+```
+
+**三大核心能力集成：**
+- **Memory**：双层记忆（`MEMORY.md` 长期事实 + `HISTORY.md` 可搜索日志），跨会话保持上下文
+- **Tools**：21 个内置工具，涵盖数据接入、处理、整合、文件系统、Shell、Web 等
+- **Skills**：可插拔技能系统，通过 `SKILL.md` 安装自定义能力
 
 ## 项目结构
 
 ```
 scidatabot/
-├── config.yaml          # 配置文件
-├── pyproject.toml       # 项目配置
+├── config.yaml                  # 主配置（LLM provider、工具、渠道）
+├── pyproject.toml               # 包管理（uv / pip）
+├── scidatabot.sh                # 启动脚本
 ├── src/
-│   ├── main.py          # 主入口
-│   ├── core/            # 核心模块
-│   │   ├── scheduler.py # 任务调度器
-│   │   ├── agent.py     # Agent 实现
-│   │   └── lane_scheduler.py # Lane 调度器
-│   ├── tools/           # 工具模块
-│   │   ├── data_access/    # 数据接入
-│   │   ├── intent_parser/  # 意图解析
-│   │   ├── data_processing/ # 数据处理
-│   │   ├── data_integration/ # 数据整合
-│   │   └── general/        # 通用工具
-│   ├── providers/      # LLM 提供商
-│   ├── channels/       # 通信渠道
-│   └── skills/         # 技能模块
-├── tui.py              # TUI 界面
-└── workspace/          # 工作目录
+│   ├── main.py                  # 应用入口 create_app()
+│   ├── cli/__init__.py          # CLI（typer）：tui / run / connect 命令
+│   ├── bus/                     # 消息总线
+│   │   ├── events.py            # InboundMessage / OutboundMessage
+│   │   └── queue.py             # MessageBus（asyncio.Queue 双队列）
+│   ├── core/
+│   │   ├── main_agent.py        # MainAgent —— ReAct 核心循环
+│   │   ├── subagent.py          # SubagentManager —— 并发子 Agent 调度
+│   │   ├── prompt_builder.py    # 系统提示构建（读取 templates/）
+│   │   ├── memory.py            # MemoryStore —— 双层记忆系统
+│   │   └── session.py           # Session 数据模型
+│   ├── session/manager.py       # SessionManager —— JSONL 会话持久化
+│   ├── config/                  # 配置加载与 Pydantic 模型
+│   ├── providers/               # LLM Provider 抽象层
+│   │   ├── base.py              # LLMProvider / LLMResponse / ToolCall
+│   │   ├── anthropic.py         # Anthropic Claude
+│   │   ├── openai.py            # OpenAI 兼容（含第三方代理）
+│   │   ├── minimax.py           # MiniMax
+│   │   └── glm.py               # 智谱 GLM
+│   ├── tools/
+│   │   ├── registry.py          # ToolRegistry —— 工具注册与动态调度
+│   │   ├── base.py              # Tool 抽象基类
+│   │   ├── general/             # 通用工具（fs / shell / web / spawn / cron / memory）
+│   │   ├── data_access/         # 数据接入（格式检测、元数据、质量评估）
+│   │   ├── data_processing/     # 数据处理（抽取、转换、清洗、统计、MAT）
+│   │   └── data_integration/    # 数据整合（时间/空间对齐、导出）
+│   ├── channels/                # 渠道接入（Feishu / Webhook）
+│   ├── cron/                    # 定时任务服务（CronService + CronTool）
+│   ├── skills/                  # 可插拔技能（Memory / GitHub）
+│   └── tui/simple_tui.py        # 命令行 TUI 界面
+└── templates/                   # Agent 提示模板
+    ├── AGENTS.md                # 主 Agent 角色与任务路由规则
+    ├── SOUL.md / USER.md / TOOLS.md
+    └── subagents/
+        ├── TASK_PLANNER.md      # 并行任务分解规则
+        ├── PROCESSOR.md         # 数据处理 Agent 提示
+        └── INTEGRATOR.md        # 结果聚合 Agent 提示
 ```
+
+## 安装
+
+**推荐使用 [uv](https://github.com/astral-sh/uv)（更快）：**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+git clone <repo-url> scidatabot && cd scidatabot
+uv sync
+```
+
+**或使用 pip：**
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+> 如环境中设置了 SOCKS 代理，安装前请执行 `unset ALL_PROXY all_proxy`。
+
+## 配置
+
+编辑 `config.yaml`，填入 LLM API Key：
+
+```yaml
+llm:
+  provider: minimax          # 可选: anthropic / openai / minimax / glm
+
+  anthropic:
+    api_key: "sk-ant-..."
+    model: "claude-sonnet-4-20250514"
+
+  minimax:
+    api_key: "your-minimax-api-key"
+    model: "MiniMax-M2.5"
+    base_url: "https://api.minimaxi.com/anthropic"
+
+  openai:
+    api_key: "sk-..."
+    model: "gpt-4o"
+
+agent:
+  max_iterations: 40          # ReAct 最大迭代轮数
+
+workspace: ~/.scidatabot      # 记忆、会话、Cron 任务持久化目录
+```
+
+也可以在 TUI 内使用 `/connect` 命令交互式配置，无需重启即时生效。
+
+## 运行
+
+### TUI 交互模式（推荐）
+
+```bash
+scidatabot tui
+# 或
+./scidatabot.sh tui
+```
+
+TUI 内支持命令：
+- `/connect` — 配置 API Key（即时热重载，无需重启）
+- `/help` — 显示帮助
+- `exit` / Ctrl+C — 退出
+
+### 使用示例
+
+```
+[SciDataBot] 解析 ./data 文件夹中所有 .mat 文件，提取信号数据，
+             对齐时间轴后合并为一个 HDF5 文件
+```
+
+SciDataBot 会自动：
+1. 识别为复杂批量任务 → 调用 `spawn` 启动流水线
+2. TaskPlanner 分析文件列表 → 生成 N 条并行 Pipeline
+3. N 个 Processor 并发处理每个文件
+4. Integrator 汇总结果 → 返回完整报告
+
+### 定时任务（常驻服务）
+
+```
+[SciDataBot] 每天凌晨 2 点自动处理 /data/incoming 目录下的新文件
+```
+
+SciDataBot 会调用 `cron` 工具注册定时任务，全时在线自动执行。
+
+## 工具列表
+
+| 类别 | 工具 | 说明 |
+|------|------|------|
+| general | `read_file` `write_file` `edit_file` `list_dir` | 文件系统操作 |
+| general | `exec` | Shell 命令执行 |
+| general | `web_search` `web_fetch` | 网络搜索与页面抓取 |
+| general | `spawn` | 派生子 Agent 并发流水线 |
+| general | `cron` | 定时任务管理 |
+| general | `memory` | 对话记忆查询 |
+| general | `weather` | 天气查询 |
+| data_access | `detect_format` | 数据文件格式检测 |
+| data_access | `extract_metadata` | 元数据提取 |
+| data_access | `assess_quality` | 数据质量评估 |
+| data_processing | `extract_data` `transform_data` `clean_data` | 数据抽取/转换/清洗 |
+| data_processing | `analyze_statistics` | 统计分析 |
+| data_processing | `extract_mat_files` | MATLAB .mat 文件解析 |
+| data_integration | `align_temporal` `align_spatial` | 时间/空间对齐 |
+| data_integration | `export_data` | 数据导出 |
+
+**支持的数据格式：**
+CSV / TSV / JSON / JSONL · NetCDF (.nc) · HDF5 (.h5/.hdf5) · MATLAB (.mat) · Parquet / Feather · NumPy (.npy/.npz) · FITS（天文）· PNG / JPEG · Gzip / ZIP
+
+## 扩展开发
+
+### 添加新工具
+
+```python
+from src.tools.base import Tool
+
+class MyTool(Tool):
+    name = "my_tool"
+    description = "工具说明"
+    category = "data_processing"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"file_path": {"type": "string"}},
+            "required": ["file_path"],
+        }
+
+    async def execute(self, file_path: str, **kwargs) -> str:
+        return "result"
+
+# 在 src/main.py create_app() 中注册
+tool_registry.register(MyTool(), "data_processing")
+```
+
+### 添加新 LLM Provider
+
+继承 `src/providers/base.py` 的 `LLMProvider`，实现 `chat()` 方法返回 `LLMResponse`，在 `src/cli/__init__.py` 的 `create_llm_provider()` 中添加分支即可。
+
+### 安装自定义 Skill
+
+```bash
+scidatabot skill:install ./my_skill_dir/
+```
+
+Skill 目录需包含 `SKILL.md`，描述触发条件和使用方式。已安装的 Skill 会自动注入到 Agent 上下文。
 
 ## License
 
