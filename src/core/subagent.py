@@ -411,7 +411,6 @@ class SubagentManager:
         subagent_type: str = "general",
     ) -> None:
         """Announce the subagent result to the main agent via the message bus."""
-        # Build structured message with subagent_type
         import json
         message_data = {
             "subagent_type": subagent_type,
@@ -420,6 +419,8 @@ class SubagentManager:
             "task": task,
             "status": status,
             "result": result,
+            "origin_channel": origin["channel"],
+            "origin_chat_id": origin["chat_id"],
         }
         
         msg = InboundMessage(
@@ -446,16 +447,6 @@ class SubagentManager:
     #         return self.prompt_builder.build_integrator_prompt()
     #     else:
     #         return self.prompt_builder.build_processor_prompt()
-
-    async def cancel_by_session(self, session_key: str) -> int:
-        """Cancel all subagents for the given session."""
-        tasks = [self._running_tasks[tid] for tid in self._session_tasks.get(session_key, [])
-                 if tid in self._running_tasks and not self._running_tasks[tid].done()]
-        for t in tasks:
-            t.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        return len(tasks)
 
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""

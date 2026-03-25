@@ -21,20 +21,10 @@ class ToolRegistry:
         self._categories[cat].add(tool.name)
 
     def get(self, name: str) -> Tool | None:
-        """获取工具"""
-        # 直接查找
+        """Get tool by name, supporting various name formats."""
         if name in self._tools:
             return self._tools[name]
 
-        # 尝试将 PascalCase 转换为 snake_case (如 ReadFile -> read_file, OpenLines -> open_lines)
-        snake_name = "".join(
-            ["_" + c.lower() if c.isupper() else c for c in name]
-        ).lstrip("_").replace("__", "_")
-
-        if snake_name in self._tools:
-            return self._tools[snake_name]
-
-        # 遍历所有工具，尝试匹配 name_variants
         for tool in self._tools.values():
             if name in tool.get_name_variants():
                 return tool
@@ -81,7 +71,11 @@ class ToolRegistry:
             return f"错误: 未找到工具 {name}"
 
         try:
-            result = await tool.execute(**arguments)
+            casted_params = tool.cast_params(arguments)
+            errors = tool.validate_params_full(casted_params)
+            if errors:
+                return f"错误: 参数验证失败 - {', '.join(errors)}"
+            result = await tool.execute(**casted_params)
             return str(result) if result is not None else "执行完成"
         except Exception as e:
             return f"错误: {str(e)}"

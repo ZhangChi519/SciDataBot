@@ -203,6 +203,27 @@ def run(
     if channel_type == "console":
         from ..channels import ConsoleChannel
         channel_manager.add_channel("main", ChannelType.CONSOLE, {})
+
+    elif channel_type == "feishu":
+        from ..channels import FeishuChannel
+        feishu_config = config_data.get("channel", {}).get("feishu", {})
+        channel_manager.add_channel("main", ChannelType.FEISHU, feishu_config)
+
+    elif channel_type == "feishu_ws":
+        from ..channels import FeishuWSChannel
+        feishu_ws_config = config_data.get("channel", {}).get("feishu_ws", {})
+        channel_manager.add_channel("main", ChannelType.FEISHU_WS, feishu_ws_config)
+
+    elif channel_type == "telegram":
+        from ..channels import TelegramChannel
+        telegram_config = config_data.get("channel", {}).get("telegram", {})
+        channel_manager.add_channel("main", ChannelType.TELEGRAM, telegram_config)
+
+    elif channel_type == "webhook":
+        from ..channels import WebhookChannel
+        webhook_config = config_data.get("channel", {}).get("webhook", {})
+        channel_manager.add_channel("main", ChannelType.WEBHOOK, webhook_config)
+
     else:
         typer.echo(f"Unknown channel: {channel_type}", err=True)
         raise typer.Exit(1)
@@ -309,22 +330,47 @@ def run(
         tool_registry=tool_registry,
     )
 
-    # Register tools with agent
-    for tool in tool_registry._tools.values():
-        agent.register_tool(tool)
-
-    # Message handler - use agent
+    # Message handler - publish to agent bus
     async def handle_message(message):
-        result = await agent.execute(message.content)
-        return result.get("result", "任务完成")
+        await agent.bus.publish_inbound(message)
 
     channel_manager.set_global_handler(handle_message)
 
     # Start
     typer.echo(f"Starting scidatabot with {provider_name}/{model_name}...")
 
+    async def run_with_agent():
+        # Start channel
+        typer.echo(f"Starting channel '{channel_type}'...")
+        await channel_manager.start_channel("main")
+        typer.echo("Channel started")
+
+        # Task: consume outbound messages and send back through channel
+        async def output_sender():
+            while True:
+                try:
+                    msg = await agent.bus.consume_outbound()
+                    if msg:
+                        typer.echo(f"[Sending response to {msg.chat_id}]")
+                        await channel_manager.send_message("main", msg)
+                except Exception as e:
+                    typer.echo(f"Error sending message: {e}")
+                    await asyncio.sleep(1)
+
+        # Run agent and output sender concurrently
+        agent_task = asyncio.create_task(agent.run())
+        sender_task = asyncio.create_task(output_sender())
+        try:
+            await asyncio.Event().wait()  # Wait forever
+        except KeyboardInterrupt:
+            pass
+        finally:
+            agent.stop()
+            sender_task.cancel()
+            await channel_manager.stop_all()
+
     try:
-        asyncio.run(channel_manager.start_channel("main"))
+        asyncio.run(run_with_agent())
     except KeyboardInterrupt:
         typer.echo("\nShutting down...")
 
@@ -615,6 +661,136 @@ def connect(
     typer.echo(f"Max tokens: {selected_tokens}")
     typer.echo("\nRestart scidatabot to use the new configuration.")
     typer.echo("Run: scidatabot run --config " + cfg_path)
+
+
+@app.command("channel")
+def channel_cmd(
+    config_path: Annotated[Optional[str], typer.Option("--config", "-c", help="Config file path")] = None,
+    channel_type: Annotated[Optional[str], typer.Option("--type", "-t", help="Channel type: console, feishu, feishu_ws, telegram, webhook")] = None,
+    app_id: Annotated[Optional[str], typer.Option("--app-id", help="Feishu App ID")] = None,
+    app_secret: Annotated[Optional[str], typer.Option("--app-secret", help="Feishu App Secret")] = None,
+    token: Annotated[Optional[str], typer.Option("--token", help="Telegram Bot Token")] = None,
+):
+    """Configure channel settings interactively or via arguments."""
+    from pathlib import Path
+
+    typer.echo("\n" + "=" * 50)
+    typer.echo("  SciDataBot Channel Configuration")
+    typer.echo(" " * 50 + "\n")
+
+    # Load existing config
+    cfg_path = config_path or DEFAULT_CONFIG
+    config_data = {}
+    if Path(cfg_path).exists():
+        with open(cfg_path) as f:
+            config_data = yaml.safe_load(f) or {}
+
+    if "channel" not in config_data:
+        config_data["channel"] = {}
+
+    # Show current config
+    current_type = config_data.get("channel", {}).get("type", "console")
+    typer.echo(f"Current channel type: {current_type}\n")
+
+    # If all arguments provided, use command mode
+    if channel_type and app_id and app_secret:
+        selected_type = channel_type
+        config_data["channel"]["type"] = selected_type
+        config_data["channel"][selected_type] = {
+            "app_id": app_id,
+            "app_secret": app_secret,
+        }
+    elif channel_type and token:
+        selected_type = channel_type
+        config_data["channel"]["type"] = selected_type
+        config_data["channel"]["telegram"] = {"token": token}
+    else:
+        # Interactive mode
+        typer.echo("Available channel types:")
+        typer.echo("  1. console     - Console (local terminal)")
+        typer.echo("  2. feishu      - Feishu HTTP API (send only)")
+        typer.echo("  3. feishu_ws   - Feishu WebSocket (send & receive)")
+        typer.echo("  4. telegram    - Telegram Bot")
+        typer.echo("  5. webhook     - Webhook (HTTP callback)")
+        typer.echo("")
+
+        choice = typer.prompt("Select channel type (1-5)", default="1", show_default=False)
+
+        channel_map = {
+            "1": "console",
+            "2": "feishu",
+            "3": "feishu_ws",
+            "4": "telegram",
+            "5": "webhook",
+        }
+        selected_type = channel_map.get(choice, "console")
+
+        if selected_type == "console":
+            config_data["channel"]["type"] = "console"
+            for key in ["feishu", "feishu_ws", "telegram"]:
+                if key in config_data["channel"]:
+                    del config_data["channel"][key]
+
+        elif selected_type in ("feishu", "feishu_ws"):
+            config_key = selected_type
+            current_config = config_data["channel"].get(config_key, {})
+            current_app_id = current_config.get("app_id", "")
+            current_secret = current_config.get("app_secret", "")
+
+            new_app_id = typer.prompt("Feishu App ID", default=current_app_id, show_default=bool(current_app_id))
+            new_secret = typer.prompt("Feishu App Secret", default=current_secret, hide_input=bool(current_secret), show_default=bool(current_secret))
+
+            if new_app_id and new_secret:
+                config_data["channel"]["type"] = config_key
+                config_data["channel"][config_key] = {
+                    "app_id": new_app_id,
+                    "app_secret": new_secret,
+                }
+            else:
+                typer.echo("\nError: app_id and app_secret are required")
+                return
+
+        elif selected_type == "telegram":
+            current_config = config_data["channel"].get("telegram", {})
+            current_token = current_config.get("token", "")
+
+            new_token = typer.prompt("Telegram Bot Token", default=current_token, show_default=bool(current_token))
+
+            if new_token:
+                config_data["channel"]["type"] = "telegram"
+                config_data["channel"]["telegram"] = {"token": new_token}
+            else:
+                typer.echo("\nError: token is required")
+                return
+
+        elif selected_type == "webhook":
+            current_config = config_data["channel"].get("webhook", {})
+            current_host = current_config.get("host", "0.0.0.0")
+            current_port = current_config.get("port", 8080)
+            current_path = current_config.get("path", "/webhook")
+
+            new_host = typer.prompt("Host", default=current_host, show_default=True)
+            new_port_str = typer.prompt("Port", default=str(current_port), show_default=True)
+            try:
+                new_port = int(new_port_str)
+            except ValueError:
+                new_port = current_port
+            new_path = typer.prompt("Path", default=current_path, show_default=True)
+
+            config_data["channel"]["type"] = "webhook"
+            config_data["channel"]["webhook"] = {
+                "host": new_host,
+                "port": new_port,
+                "path": new_path,
+            }
+
+    # Save config
+    with open(cfg_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
+
+    typer.echo(f"\n✓ Configuration saved to {cfg_path}")
+    typer.echo(f"Channel type: {config_data['channel']['type']}")
+    typer.echo("\nRestart scidatabot to use the new configuration.")
 
 
 @app.command()

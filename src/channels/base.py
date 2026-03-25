@@ -1,8 +1,9 @@
 """Channel base classes and interfaces."""
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 from enum import Enum
+
+from src.bus.events import InboundMessage as BusInboundMessage, OutboundMessage as BusOutboundMessage
 
 
 class ChannelType(Enum):
@@ -10,6 +11,7 @@ class ChannelType(Enum):
     CONSOLE = "console"
     TELEGRAM = "telegram"
     FEISHU = "feishu"
+    FEISHU_WS = "feishu_ws"
     LINE = "line"
     WEB = "web"
     WEBHOOK = "webhook"
@@ -17,26 +19,8 @@ class ChannelType(Enum):
     DISCORD = "discord"
 
 
-@dataclass
-class InboundMessage:
-    """Inbound message from a channel."""
-
-    channel: str
-    chat_id: str
-    user_id: str
-    content: str
-    message_id: Optional[str] = None
-    metadata: dict = field(default_factory=dict)
-
-
-@dataclass
-class OutboundMessage:
-    """Outbound message to a channel."""
-
-    chat_id: str
-    content: str
-    reply_to: Optional[str] = None  # message_id to reply to
-    metadata: dict = field(default_factory=dict)
+InboundMessage = BusInboundMessage
+OutboundMessage = BusOutboundMessage
 
 
 class Channel(ABC):

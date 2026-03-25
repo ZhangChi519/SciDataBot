@@ -24,9 +24,9 @@ ENV/
 Thumbs.db
 
 # Local config (可能包含敏感信息)
-config/*.yaml
-config/*.yml
-!config/example.yaml
+config/
+config.yaml
+!config.yaml.example
 workspace/
 
 # Test / cache

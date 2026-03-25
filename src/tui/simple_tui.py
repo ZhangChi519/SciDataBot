@@ -22,6 +22,7 @@ def print_welcome(mode="auto"):
     print("  - 复杂任务并行处理")
     print()
     print("\033[1;33m快捷键/命令:\033[0m")
+    print("  /channel - 配置通道 (飞书/Telegram等)")
     print("  /connect - 配置 API 设置")
     print("  /help   - 显示帮助")
     print("  Ctrl+C  - 退出程序")
@@ -142,6 +143,13 @@ async def run_simple_tui(scheduler, config_path=None):
                         print(f"\033[1;32m✓ 新配置已生效：{new_prov_type} / {new_model}\033[0m\n")
                     except Exception as _e:
                         print(f"\033[1;31m热重载失败，请重启 scidatabot：{_e}\033[0m\n")
+                continue
+
+            if msg == "/channel":
+                os.system('clear' if os.name == 'posix' else 'cls')
+                print_welcome()
+                print("\033[1;33m正在启动通道配置向导...\033[0m\n")
+                await run_channel_config(config_path)
                 continue
             
             if msg in ["exit", "quit", "/quit", "/exit"]:
@@ -323,6 +331,139 @@ async def run_connect(config_path=None):
     print(f"Model: {model}")
     print(f"Temperature: {temperature}")
     print(f"Max tokens: {max_tokens}")
+
+    return config_data
+
+
+async def run_channel_config(config_path=None):
+    """运行通道配置向导"""
+    import yaml
+    from src.channels import ChannelType
+
+    CHANNEL_TYPES = {
+        "1": ("console", "Console (本地终端)", None),
+        "2": ("feishu", "飞书 (HTTP API - 仅发送)", {"app_id": "", "app_secret": ""}),
+        "3": ("feishu_ws", "飞书 WebSocket (收发消息)", {"app_id": "", "app_secret": ""}),
+        "4": ("telegram", "Telegram Bot", {"token": ""}),
+        "5": ("webhook", "Webhook (HTTP回调)", {"host": "0.0.0.0", "port": 8080, "path": "/webhook"}),
+    }
+
+    # 加载现有配置
+    if config_path is None:
+        config_path = Path(__file__).parent.parent.parent / "config.yaml"
+    else:
+        config_path = Path(config_path)
+
+    config_data = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config_data = yaml.safe_load(f) or {}
+
+    if "channel" not in config_data:
+        config_data["channel"] = {}
+
+    # 显示当前配置
+    current_type = config_data.get("channel", {}).get("type", "console")
+    print(f"当前通道类型: {current_type}\n")
+
+    # 显示选项
+    print("可用通道:")
+    for key, (channel_id, desc, _) in CHANNEL_TYPES.items():
+        print(f"  {key}. {desc}")
+    print()
+
+    # 获取选择
+    choice = input("选择通道类型 (1-5) [默认 1]: ").strip() or "1"
+    channel_id, channel_desc, default_config = CHANNEL_TYPES.get(choice, ("console", "Console", None))
+
+    print(f"\n已选择: {channel_desc}")
+
+    # 根据通道类型获取配置
+    if channel_id == "console":
+        config_data["channel"]["type"] = "console"
+        if "feishu" in config_data["channel"]:
+            del config_data["channel"]["feishu"]
+        if "feishu_ws" in config_data["channel"]:
+            del config_data["channel"]["feishu_ws"]
+        if "telegram" in config_data["channel"]:
+            del config_data["channel"]["telegram"]
+
+    elif channel_id in ("feishu", "feishu_ws"):
+        config_key = "feishu" if channel_id == "feishu" else "feishu_ws"
+        current_config = config_data["channel"].get(config_key, {})
+
+        print(f"\n配置 {channel_desc}:")
+
+        # 获取 app_id
+        current_app_id = current_config.get("app_id", "")
+        app_id = input(f"App ID [当前: {current_app_id or '未设置'}]: ").strip()
+        if not app_id:
+            app_id = current_app_id
+
+        # 获取 app_secret
+        current_secret = current_config.get("app_secret", "")
+        secret_display = current_secret[:8] + "..." if current_secret and len(current_secret) > 8 else (current_secret or "未设置")
+        app_secret = input(f"App Secret [当前: {secret_display}]: ").strip()
+        if not app_secret:
+            app_secret = current_secret
+
+        if app_id and app_secret:
+            config_data["channel"]["type"] = config_key
+            config_data["channel"][config_key] = {
+                "app_id": app_id,
+                "app_secret": app_secret,
+            }
+            print(f"\n\033[1;32m✓ 已配置 {channel_desc}\033[0m")
+        else:
+            print(f"\n\033[1;31m✗ app_id 和 app_secret 都是必填项\033[0m")
+            return
+
+    elif channel_id == "telegram":
+        current_config = config_data["channel"].get("telegram", {})
+        print(f"\n配置 Telegram Bot:")
+
+        current_token = current_config.get("token", "")
+        token = input(f"Bot Token [当前: {current_token or '未设置'}]: ").strip()
+        if not token:
+            token = current_token
+
+        if token:
+            config_data["channel"]["type"] = "telegram"
+            config_data["channel"]["telegram"] = {"token": token}
+            print(f"\n\033[1;32m✓ 已配置 Telegram Bot\033[0m")
+        else:
+            print(f"\n\033[1;31m✗ Token 是必填项\033[0m")
+            return
+
+    elif channel_id == "webhook":
+        current_config = config_data["channel"].get("webhook", {})
+        print(f"\n配置 Webhook:")
+
+        current_host = current_config.get("host", "0.0.0.0")
+        current_port = current_config.get("port", 8080)
+        current_path = current_config.get("path", "/webhook")
+
+        host = input(f"Host [当前: {current_host}]: ").strip() or current_host
+        try:
+            port = int(input(f"Port [当前: {current_port}]: ").strip() or current_port)
+        except ValueError:
+            port = current_port
+        webhook_path = input(f"Path [当前: {current_path}]: ").strip() or current_path
+
+        config_data["channel"]["type"] = "webhook"
+        config_data["channel"]["webhook"] = {
+            "host": host,
+            "port": port,
+            "path": webhook_path,
+        }
+        print(f"\n\033[1;32m✓ 已配置 Webhook\033[0m")
+
+    # 保存配置
+    with open(config_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
+
+    print(f"\n\033[1;32m✓ 配置已保存到 {config_path}\033[0m")
+    print(f"通道类型: {config_data['channel']['type']}")
 
     return config_data
 

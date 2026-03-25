@@ -52,10 +52,13 @@ class Session:
         unconsolidated = self.messages[self.last_consolidated:]
         sliced = unconsolidated[-max_messages:]
 
+        start_idx = 0
         for i, m in enumerate(sliced):
             if m.get("role") == "user":
-                sliced = sliced[i:]
+                start_idx = i
                 break
+
+        sliced = sliced[start_idx:]
 
         out: list[dict[str, Any]] = []
         for m in sliced:

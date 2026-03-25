@@ -7,25 +7,18 @@ agent:
     Statistical analysis Use available tools to complete user requests. '
   timeout: 300
 channel:
-  feishu:
+  feishu_ws:
     app_id: your-feishu-app-id
     app_secret: your-feishu-app-secret
-    verification_token: your-verification-token
-  telegram:
-    api_url: https://api.telegram.org
-    token: your-telegram-bot-token
-  type: console
-  webhook:
-    host: 0.0.0.0
-    path: /webhook
-    port: 8080
+    verify_ssl: false
+  type: feishu_ws
 host: 0.0.0.0
 llm:
   anthropic:
-    api_key: '1'
+    api_key: your-anthropic-api-key
     base_url: https://api.anthropic.com
     max_tokens: 4096
-    model: '1'
+    model: claude-sonnet-4-6
     temperature: 0.7
   boyuerichdata:
     api_key: your-boyuerichdata-api-key
@@ -49,10 +42,10 @@ llm:
     temperature: 0.7
     timeout: 60
   minimax:
-    api_key: sk-cp-kvwFXiy6b1uz9VO1f_mlWmK9kKrP8Nuj9vrZSkUIpT9BDomWxVhLJwMlg6Dat32vMEYOeQSuFBAwlBXlMHjsL-HoDcbIjyokQUMApXwBuyW6IHifHynvM0M
+    api_key: your-minimax-api-key
     base_url: https://api.minimaxi.com/anthropic
     max_tokens: 4096
-    model: MiniMax-M2.5
+    model: MiniMax-M2.7-highspeed
     temperature: 0.7
   openai:
     api_key: your-openai-api-key

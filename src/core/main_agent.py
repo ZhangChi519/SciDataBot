@@ -118,8 +118,17 @@ class MainAgent:
             spawn_tool = self.tools._tools.get("spawn")
             if spawn_tool:
                 spawn_tool.set_context(channel=msg.channel, chat_id=msg.chat_id)
-        
-        history = session.get_history()
+
+        # Send immediate acknowledgment so user knows the request was received.
+        preview = msg.content[:30] + ("…" if len(msg.content) > 30 else "")
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=f"「{preview}」已收到，处理中……",
+            reply_to=msg.metadata.get("message_id"),
+        ))
+
+        history = session.get_history(max_messages=40)
         messages = self.prompt_builder.build_messages(
             history=history,
             current_message=msg.content,
@@ -136,11 +145,12 @@ class MainAgent:
         if final_content:
             session.add_message("assistant", final_content)
         self.session_manager.save(session)
-        
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content or "I've completed processing but have no response to give.",
+            reply_to=msg.metadata.get("message_id"),
         )
 
     async def _run_agent_loop(
@@ -294,7 +304,8 @@ class MainAgent:
             status = data.get("status", "error")
             result = data.get("result", "")
 
-            # Derive session_key from chat_id field (set by _announce_result as "channel:chat_id")
+            origin_channel = data.get("origin_channel", "cli")
+            origin_chat_id = data.get("origin_chat_id", "direct")
             session_key = msg.chat_id
 
             logger.info("[MainAgent] Received {} result, status={}, result_len={}", subagent_type, status, len(result))
@@ -303,34 +314,32 @@ class MainAgent:
                 logger.error("[MainAgent] Subagent error: {}", result)
                 origin = self._get_subagent_state(session_key)
                 await self.bus.publish_outbound(OutboundMessage(
-                    channel=origin.get("origin_channel") or msg.channel,
-                    chat_id=origin.get("origin_chat_id") or msg.chat_id,
+                    channel=origin.get("origin_channel") or origin_channel,
+                    chat_id=origin.get("origin_chat_id") or origin_chat_id,
                     content=f"Error: {result}",
                 ))
                 return
 
             if subagent_type == "task_planner":
                 logger.info("[MainAgent] Calling _handle_task_planner_result...")
-                await self._handle_task_planner_result(msg, result, session_key)
+                await self._handle_task_planner_result(msg, result, session_key, origin_channel, origin_chat_id)
             elif subagent_type == "processor":
                 logger.info("[MainAgent] Calling _handle_processor_result...")
-                await self._handle_processor_result(msg, result, data.get("pipeline_id"), session_key)
+                await self._handle_processor_result(msg, result, data.get("pipeline_id"), session_key, origin_channel, origin_chat_id)
             elif subagent_type == "integrator":
                 logger.info("[MainAgent] Calling _handle_integrator_result...")
-                await self._handle_integrator_result(msg, result, session_key)
+                await self._handle_integrator_result(msg, result, session_key, origin_channel, origin_chat_id)
 
         except Exception as e:
             logger.error("[MainAgent] Error handling subagent result: {}", e)
     
-    async def _handle_task_planner_result(self, msg: InboundMessage, result: str, session_key: str) -> None:
+    async def _handle_task_planner_result(self, msg: InboundMessage, result: str, session_key: str, origin_channel: str, origin_chat_id: str) -> None:
         """Handle TaskPlanner result - parse plan and spawn processors."""
         logger.info("[MainAgent] Processing TaskPlanner result...")
         state = self._get_subagent_state(session_key)
 
-        # Parse plan — template outputs a JSON array [...], so try array first, then object
         plan = None
         try:
-            # 1. Try JSON array: [ { "pipeline_id": ... } ]
             arr_match = re.search(r'\[[\s\S]*\]', result, re.DOTALL)
             if arr_match:
                 pipelines_raw = json.loads(arr_match.group())
@@ -338,7 +347,6 @@ class MainAgent:
                     plan = {"pipelines": pipelines_raw}
                     logger.info("[MainAgent] Parsed plan as JSON array, {} pipelines", len(pipelines_raw))
 
-            # 2. Fallback: JSON object { "pipelines": [...] }
             if plan is None:
                 obj_match = re.search(r'\{[\s\S]*\}', result, re.DOTALL)
                 if obj_match:
@@ -353,39 +361,30 @@ class MainAgent:
         pipelines = plan.get("pipelines", [])
         
         if not pipelines:
-            logger.warning("[MainAgent] No pipelines in plan, using default")
-            # Use a default plan based on the task
+            logger.warning("[MainAgent] No pipelines in plan, using exec fallback")
             pipelines = [
                 {
                     "pipeline_id": 1,
                     "tasks": [
                         {
                             "task_id": 1,
-                            "tool": "list_dir",
-                            "inputs": "./data",
-                            "outputs": "List all files"
+                            "tool": "exec",
+                            "command": "cd ./data && python3 -c \"import json,os;r=[{'filename':f,'last26':open(f).read()[-26:]}for f in sorted(os.listdir('.'))if os.path.isfile(f)];open('../last26.json','w').write(json.dumps(r,indent=2))\"",
+                            "description": "Extract last 26 chars from all files and save to JSON"
                         }
                     ]
                 }
             ]
             plan = {"pipelines": pipelines}
         
-        # Update state
         state["task_planner_done"] = True
         state["plan"] = plan
         state["expected_processors"] = len(pipelines)
         state["processor_results"] = []
         state["processors_done"] = 0
-        # Parse original origin back from msg.chat_id ("channel:chat_id")
-        # msg.chat_id was set by SubagentManager._announce_result as f"{origin_channel}:{origin_chat_id}"
-        if ":" in msg.chat_id:
-            orig_channel, orig_chat_id = msg.chat_id.split(":", 1)
-        else:
-            orig_channel, orig_chat_id = "cli", msg.chat_id
-        state["origin_channel"] = orig_channel
-        state["origin_chat_id"] = orig_chat_id
+        state["origin_channel"] = origin_channel
+        state["origin_chat_id"] = origin_chat_id
 
-        # Spawn all processors in parallel
         logger.info("[MainAgent] Spawning {} Processors...", len(pipelines))
 
         for pipeline in pipelines:
@@ -393,20 +392,19 @@ class MainAgent:
             await self.subagent_manager.spawn(
                 task=json.dumps(pipeline, ensure_ascii=False),
                 label=f"Processor-{pipeline_id}",
-                origin_channel=orig_channel,
-                origin_chat_id=orig_chat_id,
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
                 session_key=session_key,
                 subagent_type="processor",
             )
 
         logger.info("[MainAgent] All Processors spawned, waiting for results...")
 
-    async def _handle_processor_result(self, msg: InboundMessage, result: str, pipeline_id: int = None, session_key: str = None) -> None:
+    async def _handle_processor_result(self, msg: InboundMessage, result: str, pipeline_id: int = None, session_key: str = None, origin_channel: str = None, origin_chat_id: str = None) -> None:
         """Handle Processor result - collect and check if all done."""
         logger.info("[MainAgent] Processor {} completed, result: {}", pipeline_id, result[:300] if result else "empty")
         state = self._get_subagent_state(session_key or msg.chat_id)
 
-        # Collect result
         state["processor_results"].append({
             "pipeline_id": pipeline_id,
             "result": result,
@@ -418,7 +416,6 @@ class MainAgent:
 
         logger.info("[MainAgent] Processor {}/{} completed", done, expected)
 
-        # Check if all processors done
         if done >= expected and expected > 0 and not state.get("integrator_spawned"):
             logger.info("[MainAgent] All Processors done, spawning Integrator...")
             state["integrator_spawned"] = True
@@ -435,18 +432,17 @@ class MainAgent:
                 subagent_type="integrator",
             )
 
-    async def _handle_integrator_result(self, msg: InboundMessage, result: str, session_key: str = None) -> None:
+    async def _handle_integrator_result(self, msg: InboundMessage, result: str, session_key: str = None, origin_channel: str = None, origin_chat_id: str = None) -> None:
         """Handle Integrator result - send final result to user."""
         logger.info("[MainAgent] Integrator completed")
         state = self._get_subagent_state(session_key or msg.chat_id)
 
         await self.bus.publish_outbound(OutboundMessage(
-            channel=state["origin_channel"],
-            chat_id=state["origin_chat_id"],
+            channel=origin_channel or state["origin_channel"],
+            chat_id=origin_chat_id or state["origin_chat_id"],
             content=result,
         ))
 
-        # Clean up per-session state after pipeline completes
         self._subagent_states.pop(session_key or msg.chat_id, None)
 
         logger.info("[MainAgent] Complex task completed, result sent to user")

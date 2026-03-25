@@ -129,6 +129,7 @@ class ChannelManager:
         from .console import ConsoleChannel
         from .telegram import TelegramChannel
         from .feishu import FeishuChannel, FeishuWebHookChannel
+        from .feishu_ws import FeishuWSChannel
         from .webhook import WebhookChannel
 
         if channel_type == ChannelType.CONSOLE:
@@ -139,6 +140,8 @@ class ChannelManager:
             if "webhook_url" in config:
                 return FeishuWebHookChannel(config)
             return FeishuChannel(config)
+        elif channel_type == ChannelType.FEISHU_WS:
+            return FeishuWSChannel(config)
         elif channel_type == ChannelType.WEBHOOK:
             return WebhookChannel(config)
         else:
