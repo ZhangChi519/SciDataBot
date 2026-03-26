@@ -192,7 +192,7 @@ workspace: ~/.scidatabot      # 记忆、会话、Cron 任务持久化目录
 
 ## 运行
 
-### TUI 交互模式（推荐）
+### TUI 交互模式（配置用）
 
 ```bash
 scidatabot tui
@@ -201,9 +201,16 @@ scidatabot tui
 ```
 
 TUI 内支持命令：
-- `/connect` — 配置 API Key（即时热重载，无需重启）
+- `/connect` — 配置 API Key，目前只测试的Minimax M2.5/2.7/highspeed（即时热重载，无需重启）
+- `/channel` — 配置 channel，目前只测试了 飞书 WebSocket（即时热重载，无需重启）
 - `/help` — 显示帮助
 - `exit` / Ctrl+C — 退出
+
+配置完成后，可使用飞书访问。
+
+```bash
+scidatabot run
+```
 
 ### 使用示例
 
