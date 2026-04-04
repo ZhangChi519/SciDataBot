@@ -235,17 +235,29 @@ class MainAgent:
         msg: dict[str, Any] = {"role": "assistant", "content": content or ""}
         
         if tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tc.id or f"toolu_{uuid_module.uuid4().hex[:8]}",
+            prepared_calls = []
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    tc_id = tc.get("id") or f"toolu_{uuid_module.uuid4().hex[:8]}"
+                    tc["id"] = tc_id
+                    tc_name = tc.get("name") or tc.get("function", {}).get("name", "")
+                    tc_args = tc.get("arguments") or tc.get("function", {}).get("arguments", {})
+                else:
+                    tc_id = getattr(tc, "id", None) or f"toolu_{uuid_module.uuid4().hex[:8]}"
+                    tc.id = tc_id
+                    tc_name = getattr(tc, "name", "")
+                    tc_args = getattr(tc, "arguments", {})
+
+                prepared_calls.append({
+                    "id": tc_id,
                     "type": "function",
                     "function": {
-                        "name": tc.name,
-                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                        "name": tc_name,
+                        "arguments": json.dumps(tc_args, ensure_ascii=False),
                     }
-                }
-                for tc in tool_calls
-            ]
+                })
+
+            msg["tool_calls"] = prepared_calls
         
         messages.append(msg)
         return messages
@@ -257,7 +269,12 @@ class MainAgent:
         tool_name: str,
         result: str,
     ) -> list[dict]:
-        """Add tool result to messages list."""
+        """Add tool result to messages list.
+        
+        Supports both Anthropic (tool_use_id) and OpenAI (tool_call_id) formats.
+        Always stores as tool_call_id internally, provider's convert_messages_* 
+        will map to the correct format when sending to API.
+        """
         # Ensure tool_call_id is not empty
         final_tool_call_id = tool_call_id if tool_call_id else "unknown"
         
@@ -265,11 +282,15 @@ class MainAgent:
         if len(result) > self._TOOL_RESULT_MAX_CHARS:
             result = result[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
         
-        messages.append({
+        # Build tool result message - always use tool_call_id internally
+        # The provider's convert_messages_* methods will handle the mapping
+        tool_result_msg: dict[str, Any] = {
             "role": "tool",
-            "tool_use_id": final_tool_call_id,
             "content": result,
-        })
+            "tool_call_id": final_tool_call_id,
+        }
+        
+        messages.append(tool_result_msg)
         return messages
 
     @staticmethod
@@ -388,6 +409,9 @@ class MainAgent:
         logger.info("[MainAgent] Spawning {} Processors...", len(pipelines))
 
         for pipeline in pipelines:
+            if not isinstance(pipeline, dict):
+                logger.warning("[MainAgent] Skip invalid pipeline entry (not dict): {}", pipeline)
+                continue
             pipeline_id = pipeline.get("pipeline_id", 0)
             await self.subagent_manager.spawn(
                 task=json.dumps(pipeline, ensure_ascii=False),

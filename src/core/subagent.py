@@ -314,6 +314,7 @@ class SubagentManager:
             def to_dict(tc):
                 return {
                     "id": tc.id,
+                    "type": "function",
                     "function": {
                         "name": tc.name,
                         "arguments": tc.arguments if isinstance(tc.arguments, str) else str(tc.arguments)
@@ -381,7 +382,7 @@ class SubagentManager:
                         logger.info("[Subagent:{}][{}] tool result: {}", subagent_type, task_id, str(tool_result)[:200])
                         messages.append({
                             "role": "tool",
-                            "tool_use_id": tool_call.id,
+                            "tool_call_id": tool_call.id or "unknown",
                             "content": str(tool_result),
                         })
                 else:
