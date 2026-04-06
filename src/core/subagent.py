@@ -292,11 +292,11 @@ class SubagentManager:
             if subagent_type == "task_planner":
                 system_prompt = self.prompt_builder.build_task_planner_prompt(task)
             elif subagent_type == "processor":
-                system_prompt = self.prompt_builder.build_processor_prompt()
+                system_prompt = self.prompt_builder.build_processor_prompt(task)
             elif subagent_type == "integrator":
                 system_prompt = self.prompt_builder.build_integrator_prompt()
             else:
-                system_prompt = self.prompt_builder.build_processor_prompt()
+                system_prompt = self.prompt_builder.build_processor_prompt(task)
             
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -314,6 +314,7 @@ class SubagentManager:
             def to_dict(tc):
                 return {
                     "id": tc.id,
+                    "type": "function",
                     "function": {
                         "name": tc.name,
                         "arguments": tc.arguments if isinstance(tc.arguments, str) else str(tc.arguments)
@@ -381,7 +382,7 @@ class SubagentManager:
                         logger.info("[Subagent:{}][{}] tool result: {}", subagent_type, task_id, str(tool_result)[:200])
                         messages.append({
                             "role": "tool",
-                            "tool_use_id": tool_call.id,
+                            "tool_call_id": tool_call.id or "unknown",
                             "content": str(tool_result),
                         })
                 else:
@@ -412,11 +413,24 @@ class SubagentManager:
     ) -> None:
         """Announce the subagent result to the main agent via the message bus."""
         import json
+        pipeline_id = None
+        if subagent_type == "processor":
+            try:
+                parsed_task = json.loads(task)
+                if isinstance(parsed_task, dict):
+                    if "pipeline" in parsed_task and isinstance(parsed_task["pipeline"], dict):
+                        pipeline_id = parsed_task["pipeline"].get("pipeline_id")
+                    else:
+                        pipeline_id = parsed_task.get("pipeline_id")
+            except Exception:
+                pipeline_id = None
+
         message_data = {
             "subagent_type": subagent_type,
             "task_id": task_id,
             "label": label,
             "task": task,
+            "pipeline_id": pipeline_id,
             "status": status,
             "result": result,
             "origin_channel": origin["channel"],

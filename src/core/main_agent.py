@@ -235,17 +235,29 @@ class MainAgent:
         msg: dict[str, Any] = {"role": "assistant", "content": content or ""}
         
         if tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tc.id or f"toolu_{uuid_module.uuid4().hex[:8]}",
+            prepared_calls = []
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    tc_id = tc.get("id") or f"toolu_{uuid_module.uuid4().hex[:8]}"
+                    tc["id"] = tc_id
+                    tc_name = tc.get("name") or tc.get("function", {}).get("name", "")
+                    tc_args = tc.get("arguments") or tc.get("function", {}).get("arguments", {})
+                else:
+                    tc_id = getattr(tc, "id", None) or f"toolu_{uuid_module.uuid4().hex[:8]}"
+                    tc.id = tc_id
+                    tc_name = getattr(tc, "name", "")
+                    tc_args = getattr(tc, "arguments", {})
+
+                prepared_calls.append({
+                    "id": tc_id,
                     "type": "function",
                     "function": {
-                        "name": tc.name,
-                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                        "name": tc_name,
+                        "arguments": json.dumps(tc_args, ensure_ascii=False),
                     }
-                }
-                for tc in tool_calls
-            ]
+                })
+
+            msg["tool_calls"] = prepared_calls
         
         messages.append(msg)
         return messages
@@ -257,7 +269,12 @@ class MainAgent:
         tool_name: str,
         result: str,
     ) -> list[dict]:
-        """Add tool result to messages list."""
+        """Add tool result to messages list.
+        
+        Supports both Anthropic (tool_use_id) and OpenAI (tool_call_id) formats.
+        Always stores as tool_call_id internally, provider's convert_messages_* 
+        will map to the correct format when sending to API.
+        """
         # Ensure tool_call_id is not empty
         final_tool_call_id = tool_call_id if tool_call_id else "unknown"
         
@@ -265,11 +282,15 @@ class MainAgent:
         if len(result) > self._TOOL_RESULT_MAX_CHARS:
             result = result[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
         
-        messages.append({
+        # Build tool result message - always use tool_call_id internally
+        # The provider's convert_messages_* methods will handle the mapping
+        tool_result_msg: dict[str, Any] = {
             "role": "tool",
-            "tool_use_id": final_tool_call_id,
             "content": result,
-        })
+            "tool_call_id": final_tool_call_id,
+        }
+        
+        messages.append(tool_result_msg)
         return messages
 
     @staticmethod
@@ -278,6 +299,14 @@ class MainAgent:
         if not text:
             return None
         return re.sub(r"<Blocks[\s\S]*?>", "", text).strip() or None
+
+    @staticmethod
+    def _extract_skill_paths(text: str | None) -> list[str]:
+        """Extract SKILL.md paths from free text."""
+        if not text:
+            return []
+        pattern = r"(?:/[^\s\"']*SKILL\.md|(?:\.|\./|\.\./)?[^\s\"']*SKILL\.md)"
+        return re.findall(pattern, text)
 
     def _get_subagent_state(self, session_key: str) -> dict:
         """Get or create per-session subagent state."""
@@ -322,7 +351,14 @@ class MainAgent:
 
             if subagent_type == "task_planner":
                 logger.info("[MainAgent] Calling _handle_task_planner_result...")
-                await self._handle_task_planner_result(msg, result, session_key, origin_channel, origin_chat_id)
+                await self._handle_task_planner_result(
+                    msg,
+                    result,
+                    session_key,
+                    origin_channel,
+                    origin_chat_id,
+                    data.get("task", ""),
+                )
             elif subagent_type == "processor":
                 logger.info("[MainAgent] Calling _handle_processor_result...")
                 await self._handle_processor_result(msg, result, data.get("pipeline_id"), session_key, origin_channel, origin_chat_id)
@@ -333,7 +369,15 @@ class MainAgent:
         except Exception as e:
             logger.error("[MainAgent] Error handling subagent result: {}", e)
     
-    async def _handle_task_planner_result(self, msg: InboundMessage, result: str, session_key: str, origin_channel: str, origin_chat_id: str) -> None:
+    async def _handle_task_planner_result(
+        self,
+        msg: InboundMessage,
+        result: str,
+        session_key: str,
+        origin_channel: str,
+        origin_chat_id: str,
+        original_task: str = "",
+    ) -> None:
         """Handle TaskPlanner result - parse plan and spawn processors."""
         logger.info("[MainAgent] Processing TaskPlanner result...")
         state = self._get_subagent_state(session_key)
@@ -384,13 +428,26 @@ class MainAgent:
         state["processors_done"] = 0
         state["origin_channel"] = origin_channel
         state["origin_chat_id"] = origin_chat_id
+        state["user_request"] = original_task
+
+        skill_paths = self._extract_skill_paths(original_task)
 
         logger.info("[MainAgent] Spawning {} Processors...", len(pipelines))
 
         for pipeline in pipelines:
+            if not isinstance(pipeline, dict):
+                logger.warning("[MainAgent] Skip invalid pipeline entry (not dict): {}", pipeline)
+                continue
             pipeline_id = pipeline.get("pipeline_id", 0)
+            processor_payload = {
+                "pipeline": pipeline,
+                "global_context": {
+                    "original_user_request": original_task,
+                    "skill_paths": skill_paths,
+                },
+            }
             await self.subagent_manager.spawn(
-                task=json.dumps(pipeline, ensure_ascii=False),
+                task=json.dumps(processor_payload, ensure_ascii=False),
                 label=f"Processor-{pipeline_id}",
                 origin_channel=origin_channel,
                 origin_chat_id=origin_chat_id,
