@@ -19,6 +19,12 @@ Decide how to split user tasks into parallel pipelines while avoiding over-fragm
 
 ### Rules
 
+0. **Sequential Subfolder Priority (Highest Priority)**
+   - If the input is a parent folder containing multiple sequentially named subfolders (e.g., `001`, `002`, `003` or `2024-01`, `2024-02`, `2024-03`):
+     - Use **one pipeline per subfolder**.
+     - Treat each subfolder as the atomic processing unit.
+     - Do **not** further split into one pipeline per file unless the user explicitly requests per-file fan-out.
+
 1. **Independent Multi-File Tasks**
    - If a task requires processing multiple files independently (e.g., read/extract/transform per file):
      - If the number of independent files **N ≤ 10**: use **one pipeline per file**.
@@ -40,7 +46,9 @@ Decide how to split user tasks into parallel pipelines while avoiding over-fragm
 
 ### Decision Procedure
 
-1. Identify independent processing units (files or partitions).
+1. Detect whether there are multiple sequentially named subfolders under the input parent folder.
+2. If yes, set independent units = subfolders (one subfolder = one pipeline), then stop splitting.
+3. If no, identify independent processing units (files or partitions).
 2. Compute **N**.
 3. Apply split strategy:
    - `N ≤ 10` → one unit = one pipeline.
@@ -48,7 +56,7 @@ Decide how to split user tasks into parallel pipelines while avoiding over-fragm
 4. Ensure final pipeline count is ideally **10–15**.
 5. Verify no independent unit is incorrectly serialized.
 
-## Example
+## Example 1
 
 Task: "Extract last 10 bytes from 3 files: a.txt, b.txt, c.txt"
 
@@ -70,15 +78,31 @@ Task: "Extract last 10 bytes from 3 files: a.txt, b.txt, c.txt"
 ]
 ```
 
-## Example (Batching for many files)
+## Example 2 (Batching for many files)
 
-Task: "Process 30 files in /data/logs/"
+Task 1: "Process 30 files in /data/logs/"
 
 **CORRECT — Grouped pipelines:**
+```
 [
   {"pipeline_id": 1, "tasks": [{"task_id": 1, "task_description": "Run processing skill on files: log_01.txt...log_10.txt", "input": "/data/logs/[01-10]", "output": "processed_batch_1"}]},
-  {"pipeline_id": 2, "tasks": [{"task_id": 1, "task_description": "Run processing skill on files: log_11.txt...log_20.txt", "input": "/data/logs/[11-20]", "output": "processed_batch_2"}]}
+  {"pipeline_id": 2, "tasks": [{"task_id": 1, "task_description": "Run processing skill on files: log_11.txt...log_20.txt", "input": "/data/logs/[11-20]", "output": "processed_batch_2"}]},
+  {"pipeline_id": 3, "tasks": [{"task_id": 1, "task_description": "Run processing skill on files: log_21.txt...log_30.txt", "input": "/data/logs/[21-30]", "output": "processed_batch_3"}]}
 ]
+```
+
+Task 2: "Process files across 5 date-organized subfolders under /data/"
+
+**CORRECT — Grouped pipelines:**
+```
+[
+  {"pipeline_id": 1, "tasks": [{"task_id": 1, "task_description": "Run processing skills on files under /data/2012-01-01", "input": "/data/2015-01-01/*", "output": "processed_batch_1"}]},
+  {"pipeline_id": 2, "tasks": [{"task_id": 2, "task_description": "Run processing skills on files under /data/2012-01-02", "input": "/data/2015-01-02/*", "output": "processed_batch_2"}]},
+  {"pipeline_id": 3, "tasks": [{"task_id": 3, "task_description": "Run processing skills on files under /data/2012-01-03", "input": "/data/2015-01-03/*", "output": "processed_batch_3"}]},
+  {"pipeline_id": 4, "tasks": [{"task_id": 4, "task_description": "Run processing skills on files under /data/2012-01-04", "input": "/data/2015-01-04/*", "output": "processed_batch_4"}]},
+  {"pipeline_id": 5, "tasks": [{"task_id": 5, "task_description": "Run processing skills on files under /data/2012-01-05", "input": "/data/2015-01-05/*", "output": "processed_batch_5"}]},
+]
+```
 
 ## Allowed Tools
 
@@ -97,7 +121,7 @@ Do NOT call `write_file`, `edit_file`, or any data-processing/transformation too
 ## Output Format
 
 When ready, output the JSON execution plan. You can wrap it in markdown json code blocks.
-
+```
 [
     {
         "pipeline_id": 1,
@@ -112,5 +136,8 @@ When ready, output the JSON execution plan. You can wrap it in markdown json cod
         ]
     }
 ]
+```
 
 IMPORTANT: Each pipeline object in the array runs **independently and in parallel** via a separate Processor subagent. If you processed N files, the array MUST have N elements.
+
+IMPORTANT (override): If input contains multiple sequentially named subfolders, and there are M such subfolders, the array MUST have M elements (one Processor per subfolder).
