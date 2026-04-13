@@ -235,17 +235,29 @@ class MainAgent:
         msg: dict[str, Any] = {"role": "assistant", "content": content or ""}
         
         if tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tc.id or f"toolu_{uuid_module.uuid4().hex[:8]}",
+            prepared_calls = []
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    tc_id = tc.get("id") or f"toolu_{uuid_module.uuid4().hex[:8]}"
+                    tc["id"] = tc_id
+                    tc_name = tc.get("name") or tc.get("function", {}).get("name", "")
+                    tc_args = tc.get("arguments") or tc.get("function", {}).get("arguments", {})
+                else:
+                    tc_id = getattr(tc, "id", None) or f"toolu_{uuid_module.uuid4().hex[:8]}"
+                    tc.id = tc_id
+                    tc_name = getattr(tc, "name", "")
+                    tc_args = getattr(tc, "arguments", {})
+
+                prepared_calls.append({
+                    "id": tc_id,
                     "type": "function",
                     "function": {
-                        "name": tc.name,
-                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                        "name": tc_name,
+                        "arguments": json.dumps(tc_args, ensure_ascii=False),
                     }
-                }
-                for tc in tool_calls
-            ]
+                })
+
+            msg["tool_calls"] = prepared_calls
         
         messages.append(msg)
         return messages
@@ -257,7 +269,12 @@ class MainAgent:
         tool_name: str,
         result: str,
     ) -> list[dict]:
-        """Add tool result to messages list."""
+        """Add tool result to messages list.
+        
+        Supports both Anthropic (tool_use_id) and OpenAI (tool_call_id) formats.
+        Always stores as tool_call_id internally, provider's convert_messages_* 
+        will map to the correct format when sending to API.
+        """
         # Ensure tool_call_id is not empty
         final_tool_call_id = tool_call_id if tool_call_id else "unknown"
         
@@ -265,11 +282,15 @@ class MainAgent:
         if len(result) > self._TOOL_RESULT_MAX_CHARS:
             result = result[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
         
-        messages.append({
+        # Build tool result message - always use tool_call_id internally
+        # The provider's convert_messages_* methods will handle the mapping
+        tool_result_msg: dict[str, Any] = {
             "role": "tool",
-            "tool_use_id": final_tool_call_id,
             "content": result,
-        })
+            "tool_call_id": final_tool_call_id,
+        }
+        
+        messages.append(tool_result_msg)
         return messages
 
     @staticmethod
@@ -278,6 +299,105 @@ class MainAgent:
         if not text:
             return None
         return re.sub(r"<Blocks[\s\S]*?>", "", text).strip() or None
+
+    @staticmethod
+    def _extract_skill_paths(text: str | None) -> list[str]:
+        """Extract SKILL.md paths from free text."""
+        if not text:
+            return []
+        pattern = r"(?:/[^\s\"']*SKILL\.md|(?:\.|\./|\.\./)?[^\s\"']*SKILL\.md)"
+        return re.findall(pattern, text)
+
+    @staticmethod
+    def _extract_json_candidates(text: str) -> list[str]:
+        """Extract possible JSON payloads from model output safely."""
+        if not text:
+            return []
+
+        candidates: list[str] = []
+
+        # 1) Prefer fenced json blocks
+        for m in re.finditer(r"```json\s*([\s\S]*?)```", text, re.IGNORECASE):
+            block = (m.group(1) or "").strip()
+            if block:
+                candidates.append(block)
+
+        # 2) Generic fenced blocks
+        for m in re.finditer(r"```\s*([\s\S]*?)```", text):
+            block = (m.group(1) or "").strip()
+            if block:
+                candidates.append(block)
+
+        # 3) Balanced inline JSON extraction
+        pair = {"{": "}", "[": "]"}
+        for i, ch in enumerate(text):
+            if ch not in pair:
+                continue
+
+            stack = [pair[ch]]
+            in_string = False
+            escape = False
+
+            for j in range(i + 1, len(text)):
+                c = text[j]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif c == "\\":
+                        escape = True
+                    elif c == '"':
+                        in_string = False
+                    continue
+
+                if c == '"':
+                    in_string = True
+                    continue
+
+                if c in pair:
+                    stack.append(pair[c])
+                elif c in ("}", "]"):
+                    if not stack or c != stack[-1]:
+                        break
+                    stack.pop()
+                    if not stack:
+                        block = text[i:j + 1].strip()
+                        if block:
+                            candidates.append(block)
+                        break
+
+        # 4) Last resort: whole output
+        stripped = text.strip()
+        if stripped:
+            candidates.append(stripped)
+
+        deduped: list[str] = []
+        seen = set()
+        for c in candidates:
+            if c in seen:
+                continue
+            seen.add(c)
+            deduped.append(c)
+        return deduped
+
+    @staticmethod
+    def _parse_task_planner_plan(result_text: str) -> dict | None:
+        """Parse TaskPlanner result into a normalized plan dict."""
+        for candidate in MainAgent._extract_json_candidates(result_text):
+            try:
+                data = json.loads(candidate)
+            except Exception:
+                continue
+
+            if isinstance(data, list):
+                return {"pipelines": data}
+
+            if isinstance(data, dict):
+                if isinstance(data.get("pipelines"), list):
+                    return data
+                nested = data.get("plan")
+                if isinstance(nested, dict) and isinstance(nested.get("pipelines"), list):
+                    return nested
+        return None
 
     def _get_subagent_state(self, session_key: str) -> dict:
         """Get or create per-session subagent state."""
@@ -322,7 +442,14 @@ class MainAgent:
 
             if subagent_type == "task_planner":
                 logger.info("[MainAgent] Calling _handle_task_planner_result...")
-                await self._handle_task_planner_result(msg, result, session_key, origin_channel, origin_chat_id)
+                await self._handle_task_planner_result(
+                    msg,
+                    result,
+                    session_key,
+                    origin_channel,
+                    origin_chat_id,
+                    data.get("task", ""),
+                )
             elif subagent_type == "processor":
                 logger.info("[MainAgent] Calling _handle_processor_result...")
                 await self._handle_processor_result(msg, result, data.get("pipeline_id"), session_key, origin_channel, origin_chat_id)
@@ -333,49 +460,59 @@ class MainAgent:
         except Exception as e:
             logger.error("[MainAgent] Error handling subagent result: {}", e)
     
-    async def _handle_task_planner_result(self, msg: InboundMessage, result: str, session_key: str, origin_channel: str, origin_chat_id: str) -> None:
+    async def _handle_task_planner_result(
+        self,
+        msg: InboundMessage,
+        result: str,
+        session_key: str,
+        origin_channel: str,
+        origin_chat_id: str,
+        original_task: str = "",
+    ) -> None:
         """Handle TaskPlanner result - parse plan and spawn processors."""
         logger.info("[MainAgent] Processing TaskPlanner result...")
         state = self._get_subagent_state(session_key)
 
         plan = None
+        parse_error: str | None = None
         try:
-            arr_match = re.search(r'\[[\s\S]*\]', result, re.DOTALL)
-            if arr_match:
-                pipelines_raw = json.loads(arr_match.group())
-                if isinstance(pipelines_raw, list):
-                    plan = {"pipelines": pipelines_raw}
-                    logger.info("[MainAgent] Parsed plan as JSON array, {} pipelines", len(pipelines_raw))
-
-            if plan is None:
-                obj_match = re.search(r'\{[\s\S]*\}', result, re.DOTALL)
-                if obj_match:
-                    plan = json.loads(obj_match.group())
-                    logger.info("[MainAgent] Parsed plan as JSON object")
+            plan = self._parse_task_planner_plan(result)
+            if plan is not None:
+                logger.info("[MainAgent] Parsed task plan, pipelines={}", len(plan.get("pipelines", [])))
         except Exception as e:
+            parse_error = str(e)
             logger.warning("[MainAgent] Failed to parse plan: {}", e)
 
-        if plan is None:
-            plan = {"pipelines": []}
-        
-        pipelines = plan.get("pipelines", [])
-        
+        pipelines = plan.get("pipelines", []) if isinstance(plan, dict) else []
+
         if not pipelines:
-            logger.warning("[MainAgent] No pipelines in plan, using exec fallback")
-            pipelines = [
-                {
-                    "pipeline_id": 1,
-                    "tasks": [
-                        {
-                            "task_id": 1,
-                            "tool": "exec",
-                            "command": "cd ./data && python3 -c \"import json,os;r=[{'filename':f,'last26':open(f).read()[-26:]}for f in sorted(os.listdir('.'))if os.path.isfile(f)];open('../last26.json','w').write(json.dumps(r,indent=2))\"",
-                            "description": "Extract last 26 chars from all files and save to JSON"
-                        }
-                    ]
+            error_payload = {
+                "error": {
+                    "code": "TASK_PLANNER_PLAN_INVALID",
+                    "message": "TaskPlanner 未生成可执行的 pipelines，已终止执行。",
+                    "retryable": True,
+                    "details": {
+                        "parse_error": parse_error,
+                        "raw_result_preview": (result or "")[:500],
+                    },
+                    "suggestion": [
+                        "请重试一次当前请求。",
+                        "若仍失败，请将任务拆分成更明确的子任务后重试（重规划）。",
+                    ],
                 }
-            ]
-            plan = {"pipelines": pipelines}
+            }
+            logger.warning("[MainAgent] Invalid task plan, ask user to retry/replan")
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=origin_channel,
+                chat_id=origin_chat_id,
+                content=(
+                    "任务规划失败，未生成可执行流水线。\n"
+                    "请重试，或将任务拆分后重新发起。\n\n"
+                    f"{json.dumps(error_payload, ensure_ascii=False, indent=2)}"
+                ),
+            ))
+            self._subagent_states.pop(session_key, None)
+            return
         
         state["task_planner_done"] = True
         state["plan"] = plan
@@ -384,13 +521,26 @@ class MainAgent:
         state["processors_done"] = 0
         state["origin_channel"] = origin_channel
         state["origin_chat_id"] = origin_chat_id
+        state["user_request"] = original_task
+
+        skill_paths = self._extract_skill_paths(original_task)
 
         logger.info("[MainAgent] Spawning {} Processors...", len(pipelines))
 
         for pipeline in pipelines:
+            if not isinstance(pipeline, dict):
+                logger.warning("[MainAgent] Skip invalid pipeline entry (not dict): {}", pipeline)
+                continue
             pipeline_id = pipeline.get("pipeline_id", 0)
+            processor_payload = {
+                "pipeline": pipeline,
+                "global_context": {
+                    "original_user_request": original_task,
+                    "skill_paths": skill_paths,
+                },
+            }
             await self.subagent_manager.spawn(
-                task=json.dumps(pipeline, ensure_ascii=False),
+                task=json.dumps(processor_payload, ensure_ascii=False),
                 label=f"Processor-{pipeline_id}",
                 origin_channel=origin_channel,
                 origin_chat_id=origin_chat_id,
