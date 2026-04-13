@@ -35,11 +35,105 @@ class TaskPlannerSubagent:
         self.provider = provider
         self.workspace = workspace
         self.model = model
+
+    @staticmethod
+    def _extract_json_candidates(text: str) -> list[str]:
+        """Extract possible JSON payloads from free-form text safely."""
+        import re
+
+        if not text:
+            return []
+
+        candidates: list[str] = []
+
+        # 1) Prefer fenced json blocks
+        for m in re.finditer(r"```json\s*([\s\S]*?)```", text, re.IGNORECASE):
+            block = (m.group(1) or "").strip()
+            if block:
+                candidates.append(block)
+
+        # 2) Then generic fenced blocks (in case model forgot json tag)
+        for m in re.finditer(r"```\s*([\s\S]*?)```", text):
+            block = (m.group(1) or "").strip()
+            if block:
+                candidates.append(block)
+
+        # 3) Balanced JSON extraction for inline payloads
+        pair = {"{": "}", "[": "]"}
+        for i, ch in enumerate(text):
+            if ch not in pair:
+                continue
+
+            stack = [pair[ch]]
+            in_string = False
+            escape = False
+
+            for j in range(i + 1, len(text)):
+                c = text[j]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif c == "\\":
+                        escape = True
+                    elif c == '"':
+                        in_string = False
+                    continue
+
+                if c == '"':
+                    in_string = True
+                    continue
+
+                if c in pair:
+                    stack.append(pair[c])
+                elif c in ("}", "]"):
+                    if not stack or c != stack[-1]:
+                        break
+                    stack.pop()
+                    if not stack:
+                        block = text[i:j + 1].strip()
+                        if block:
+                            candidates.append(block)
+                        break
+
+        # 4) Last resort: whole text
+        stripped = text.strip()
+        if stripped:
+            candidates.append(stripped)
+
+        # Dedupe while preserving order
+        deduped: list[str] = []
+        seen = set()
+        for c in candidates:
+            if c in seen:
+                continue
+            seen.add(c)
+            deduped.append(c)
+        return deduped
+
+    @staticmethod
+    def _parse_plan_payload(text: str) -> dict | None:
+        """Parse task planner output into normalized dict format."""
+        for candidate in TaskPlannerSubagent._extract_json_candidates(text):
+            try:
+                data = json.loads(candidate)
+            except Exception:
+                continue
+
+            if isinstance(data, list):
+                return {
+                    "task_type": "processing",
+                    "execution_strategy": "parallel",
+                    "pipelines": data,
+                    "result_handling": {"mode": "context"},
+                }
+
+            if isinstance(data, dict):
+                return data
+
+        return None
     
     async def execute(self, user_request: str) -> dict:
         """执行任务规划，返回执行计划"""
-        import re
-        
         prompt = f"""根据用户请求，生成数据处理执行计划。
 
 用户请求: {user_request}
@@ -74,13 +168,12 @@ class TaskPlannerSubagent:
             messages=[{"role": "user", "content": prompt}],
             model=self.model,
         )
-        
-        try:
-            match = re.search(r'\{.*\}', result.content or "", re.DOTALL)
-            if match:
-                return json.loads(match.group())
-        except Exception as e:
-            logger.warning(f"TaskPlanner parse failed: {e}")
+
+        parsed = self._parse_plan_payload(result.content or "")
+        if parsed is not None:
+            return parsed
+
+        logger.warning("TaskPlanner parse failed: no valid JSON payload")
         
         return {
             "task_type": "processing",
@@ -292,11 +385,11 @@ class SubagentManager:
             if subagent_type == "task_planner":
                 system_prompt = self.prompt_builder.build_task_planner_prompt(task)
             elif subagent_type == "processor":
-                system_prompt = self.prompt_builder.build_processor_prompt()
+                system_prompt = self.prompt_builder.build_processor_prompt(task)
             elif subagent_type == "integrator":
                 system_prompt = self.prompt_builder.build_integrator_prompt()
             else:
-                system_prompt = self.prompt_builder.build_processor_prompt()
+                system_prompt = self.prompt_builder.build_processor_prompt(task)
             
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -308,12 +401,16 @@ class SubagentManager:
             iteration = 0
             final_result = None
 
-            # Read-only tools allowed for task_planner (explore but don't mutate)
+            # Tool access policy by subagent type
             _READONLY_TOOL_NAMES = {"list_dir", "read_file", "exec"}
+            _NON_SPAWN_TOOL_NAMES = {
+                t.name for t in (self.tools or []) if t.name != "spawn"
+            }
 
             def to_dict(tc):
                 return {
                     "id": tc.id,
+                    "type": "function",
                     "function": {
                         "name": tc.name,
                         "arguments": tc.arguments if isinstance(tc.arguments, str) else str(tc.arguments)
@@ -330,8 +427,14 @@ class SubagentManager:
                         t.to_schema() for t in self.tools
                         if t.name in _READONLY_TOOL_NAMES
                     ] if self.tools else []
+                elif subagent_type in {"processor", "integrator"}:
+                    # Prevent nested planning loops from processor/integrator
+                    tools_to_use = [
+                        t.to_schema() for t in self.tools
+                        if t.name in _NON_SPAWN_TOOL_NAMES
+                    ] if self.tools else []
                 else:
-                    # processor / integrator: full tool access
+                    # default: full access
                     tools_to_use = [t.to_schema() for t in self.tools] if self.tools else []
 
                 logger.info("[Subagent:{}][{}] iter={} tools={}", subagent_type, task_id, iteration, len(tools_to_use))
@@ -356,10 +459,12 @@ class SubagentManager:
                     })
 
                     # Build allowed-name set for this subagent type (enforce at execution time)
-                    allowed_names = (
-                        _READONLY_TOOL_NAMES if subagent_type == "task_planner"
-                        else {t.name for t in self.tools}
-                    )
+                    if subagent_type == "task_planner":
+                        allowed_names = _READONLY_TOOL_NAMES
+                    elif subagent_type in {"processor", "integrator"}:
+                        allowed_names = _NON_SPAWN_TOOL_NAMES
+                    else:
+                        allowed_names = {t.name for t in self.tools}
 
                     for tool_call in response.tool_calls:
                         logger.info("[Subagent:{}][{}] tool={} args={}", subagent_type, task_id, tool_call.name, str(tool_call.arguments)[:120])
@@ -381,7 +486,7 @@ class SubagentManager:
                         logger.info("[Subagent:{}][{}] tool result: {}", subagent_type, task_id, str(tool_result)[:200])
                         messages.append({
                             "role": "tool",
-                            "tool_use_id": tool_call.id,
+                            "tool_call_id": tool_call.id or "unknown",
                             "content": str(tool_result),
                         })
                 else:
@@ -412,11 +517,24 @@ class SubagentManager:
     ) -> None:
         """Announce the subagent result to the main agent via the message bus."""
         import json
+        pipeline_id = None
+        if subagent_type == "processor":
+            try:
+                parsed_task = json.loads(task)
+                if isinstance(parsed_task, dict):
+                    if "pipeline" in parsed_task and isinstance(parsed_task["pipeline"], dict):
+                        pipeline_id = parsed_task["pipeline"].get("pipeline_id")
+                    else:
+                        pipeline_id = parsed_task.get("pipeline_id")
+            except Exception:
+                pipeline_id = None
+
         message_data = {
             "subagent_type": subagent_type,
             "task_id": task_id,
             "label": label,
             "task": task,
+            "pipeline_id": pipeline_id,
             "status": status,
             "result": result,
             "origin_channel": origin["channel"],
