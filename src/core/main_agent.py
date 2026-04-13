@@ -514,23 +514,50 @@ class MainAgent:
             self._subagent_states.pop(session_key, None)
             return
         
-        state["task_planner_done"] = True
-        state["plan"] = plan
-        state["expected_processors"] = len(pipelines)
-        state["processor_results"] = []
-        state["processors_done"] = 0
-        state["origin_channel"] = origin_channel
-        state["origin_chat_id"] = origin_chat_id
-        state["user_request"] = original_task
-
         skill_paths = self._extract_skill_paths(original_task)
 
-        logger.info("[MainAgent] Spawning {} Processors...", len(pipelines))
-
-        for pipeline in pipelines:
+        valid_pipelines: list[dict] = []
+        for idx, pipeline in enumerate(pipelines, start=1):
             if not isinstance(pipeline, dict):
                 logger.warning("[MainAgent] Skip invalid pipeline entry (not dict): {}", pipeline)
                 continue
+            if "pipeline_id" not in pipeline:
+                pipeline = {**pipeline, "pipeline_id": idx}
+            valid_pipelines.append(pipeline)
+
+        if not valid_pipelines:
+            error_payload = {
+                "error": {
+                    "code": "TASK_PLANNER_NO_VALID_PIPELINES",
+                    "message": "TaskPlanner 返回了 pipelines，但没有可执行的有效 pipeline。",
+                    "retryable": True,
+                    "details": {
+                        "pipelines_count": len(pipelines),
+                        "valid_pipelines_count": 0,
+                    },
+                    "suggestion": [
+                        "请重试一次当前请求。",
+                        "若仍失败，请让 TaskPlanner 输出严格 JSON，并确保 pipelines 每一项都是对象。",
+                    ],
+                }
+            }
+            logger.warning("[MainAgent] No valid pipeline entries after validation")
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=origin_channel,
+                chat_id=origin_chat_id,
+                content=(
+                    "任务规划失败，未发现可执行的有效 pipeline。\n"
+                    "请重试，或将任务拆分后重新发起。\n\n"
+                    f"{json.dumps(error_payload, ensure_ascii=False, indent=2)}"
+                ),
+            ))
+            self._subagent_states.pop(session_key, None)
+            return
+
+        logger.info("[MainAgent] Spawning {} valid Processors...", len(valid_pipelines))
+
+        spawned_pipelines: list[dict] = []
+        for pipeline in valid_pipelines:
             pipeline_id = pipeline.get("pipeline_id", 0)
             processor_payload = {
                 "pipeline": pipeline,
@@ -539,15 +566,66 @@ class MainAgent:
                     "skill_paths": skill_paths,
                 },
             }
-            await self.subagent_manager.spawn(
-                task=json.dumps(processor_payload, ensure_ascii=False),
-                label=f"Processor-{pipeline_id}",
-                origin_channel=origin_channel,
-                origin_chat_id=origin_chat_id,
-                session_key=session_key,
-                subagent_type="processor",
-            )
+            try:
+                await self.subagent_manager.spawn(
+                    task=json.dumps(processor_payload, ensure_ascii=False),
+                    label=f"Processor-{pipeline_id}",
+                    origin_channel=origin_channel,
+                    origin_chat_id=origin_chat_id,
+                    session_key=session_key,
+                    subagent_type="processor",
+                )
+                spawned_pipelines.append(pipeline)
+            except Exception as e:
+                logger.error("[MainAgent] Failed to spawn Processor-{}: {}", pipeline_id, e)
 
+        if not spawned_pipelines:
+            error_payload = {
+                "error": {
+                    "code": "PROCESSOR_SPAWN_FAILED",
+                    "message": "未能成功启动任何 Processor，已终止执行。",
+                    "retryable": True,
+                    "details": {
+                        "valid_pipelines_count": len(valid_pipelines),
+                        "spawned_pipelines_count": 0,
+                    },
+                    "suggestion": [
+                        "请重试一次当前请求。",
+                        "如仍失败，请检查子代理服务状态后重试。",
+                    ],
+                }
+            }
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=origin_channel,
+                chat_id=origin_chat_id,
+                content=(
+                    "任务执行失败，未能启动任何处理流水线。\n"
+                    "请重试。\n\n"
+                    f"{json.dumps(error_payload, ensure_ascii=False, indent=2)}"
+                ),
+            ))
+            self._subagent_states.pop(session_key, None)
+            return
+
+        normalized_plan = dict(plan) if isinstance(plan, dict) else {}
+        normalized_plan["pipelines"] = spawned_pipelines
+
+        state["task_planner_done"] = True
+        state["plan"] = normalized_plan
+        state["expected_processors"] = len(spawned_pipelines)
+        state["processor_results"] = []
+        state["processors_done"] = 0
+        state["integrator_spawned"] = False
+        state["origin_channel"] = origin_channel
+        state["origin_chat_id"] = origin_chat_id
+        state["user_request"] = original_task
+
+        logger.info(
+            "[MainAgent] Processors spawned: {}/{} (expected={})",
+            len(spawned_pipelines),
+            len(valid_pipelines),
+            state["expected_processors"],
+        )
         logger.info("[MainAgent] All Processors spawned, waiting for results...")
 
     async def _handle_processor_result(self, msg: InboundMessage, result: str, pipeline_id: int = None, session_key: str = None, origin_channel: str = None, origin_chat_id: str = None) -> None:
