@@ -1,6 +1,7 @@
 """Prompt builder - modular system prompt construction."""
 
 import platform
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -228,18 +229,107 @@ Your workspace is at: {workspace_path}
                 logger.warning(f"Failed to load subagent template {subagent_type}: {e}")
         return ""
 
+    def _discover_skill_files(self) -> list[Path]:
+        """Discover skill files from workspace skill roots."""
+        roots = [self.workspace / "skills", self.workspace / "src" / "skills"]
+        files: list[Path] = []
+
+        for root in roots:
+            if not root.exists():
+                continue
+            try:
+                files.extend(sorted(root.rglob("SKILL.md")))
+            except Exception as e:
+                logger.warning(f"Failed to scan skills under {root}: {e}")
+
+        # 去重并保持稳定顺序
+        deduped: list[Path] = []
+        seen = set()
+        for p in files:
+            rp = str(p.resolve())
+            if rp in seen:
+                continue
+            seen.add(rp)
+            deduped.append(p)
+        return deduped
+
+    @staticmethod
+    def _extract_skill_paths_from_text(text: str) -> list[str]:
+        """Extract SKILL.md paths from free text."""
+        if not text:
+            return []
+        pattern = r"(?:/[^\s\"']*SKILL\.md|(?:\.|\./|\.\./)?[^\s\"']*SKILL\.md)"
+        return re.findall(pattern, text)
+
+    def _build_subagent_skills_context(self, user_request: str | None = None) -> str:
+        """Build reusable skills context for subagent prompts."""
+        skill_files = self._discover_skill_files()
+        workspace_path = str(self.workspace.expanduser().resolve())
+
+        lines = [
+            "## Skills Context",
+            f"- Skill root (workspace): {workspace_path}/skills",
+            f"- Skill root (source): {workspace_path}/src/skills",
+        ]
+
+        if skill_files:
+            lines.append("- Discovered SKILL files:")
+            for sf in skill_files:
+                try:
+                    rel = sf.resolve().relative_to(self.workspace.resolve())
+                    lines.append(f"  - {rel.as_posix()}")
+                except Exception:
+                    lines.append(f"  - {str(sf)}")
+        else:
+            lines.append("- Discovered SKILL files: (none)")
+
+        lines.append(
+            "- Rule: If the user request or task references a SKILL.md, you MUST read and follow it as a hard constraint before executing tasks."
+        )
+
+        # 若用户请求里显式提到 SKILL 路径，则内联其内容（提高约束强度）
+        if user_request:
+            explicit_paths = self._extract_skill_paths_from_text(user_request)
+            if explicit_paths:
+                lines.append("\n## Referenced Skill Content (must follow)")
+            for raw_path in explicit_paths:
+                skill_path = Path(raw_path)
+                if not skill_path.is_absolute():
+                    skill_path = (self.workspace / skill_path).resolve()
+                if not skill_path.exists() or not skill_path.is_file():
+                    continue
+                try:
+                    content = skill_path.read_text(encoding="utf-8")
+                    lines.append(f"\n### {skill_path}")
+                    lines.append(content)
+                except Exception as e:
+                    logger.warning(f"Failed to inline skill file {skill_path}: {e}")
+
+        return "\n".join(lines)
+
     def build_task_planner_prompt(self, user_request: str) -> str:
         """Build system prompt for TaskPlanner subagent."""
         template = self._load_subagent_template("task_planner")
         if template:
-            return template.replace("{user_request}", user_request).replace("{workspace}", str(self.workspace))
+            rendered = template.replace("{user_request}", user_request).replace("{workspace}", str(self.workspace))
+            skills_ctx = self._build_subagent_skills_context(user_request)
+            return (
+                f"{rendered}\n\n"
+                "## Planning Constraint\n"
+                "You MUST preserve user-declared SKILL constraints in every pipeline task.\n"
+                "If a SKILL.md is referenced, make sure each pipeline/task explicitly requires following that SKILL.\n\n"
+                f"{skills_ctx}"
+            )
         return ""
 
-    def build_processor_prompt(self) -> str:
+    def build_processor_prompt(self, task_input: str | None = None) -> str:
         """Build system prompt for Processor subagent."""
         template = self._load_subagent_template("processor")
         if template:
-            return template.replace("{workspace}", str(self.workspace))
+            rendered = template.replace("{workspace}", str(self.workspace))
+            skills_ctx = self._build_subagent_skills_context(task_input)
+            task_ctx = f"\n\n## Original Task Input\n{task_input}" if task_input else ""
+            return f"{rendered}\n\n{skills_ctx}{task_ctx}"
         return ""
 
     def build_integrator_prompt(self) -> str:
