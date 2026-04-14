@@ -1,0 +1,90 @@
+agent:
+  max_iterations: 40
+  name: scidatabot
+  system_prompt: 'You are scidatabot, a professional scientific data assistant. Your
+    capabilities include: - Understanding scientific data structures - Analyzing data
+    quality - Processing and transforming data - Data integration and alignment -
+    Statistical analysis Use available tools to complete user requests. '
+  timeout: 300
+channel:
+  feishu_ws:
+    app_id: your-feishu-app-id
+    app_secret: your-feishu-app-secret
+    verify_ssl: false
+  type: feishu_ws
+host: 0.0.0.0
+llm:
+  anthropic:
+    api_key: your-anthropic-api-key
+    base_url: https://api.anthropic.com
+    max_tokens: 4096
+    model: claude-sonnet-4-6
+    temperature: 0.7
+  boyuerichdata:
+    api_key: your-boyuerichdata-api-key
+    base_url: http://35.220.164.252:3888
+    max_tokens: 4096
+    model: claude-sonnet-4-6
+    temperature: 0.7
+    timeout: 300
+  custom:
+    api_key: your-custom-api-key
+    base_url: ''
+    max_tokens: 4096
+    model: gpt-4o
+    temperature: 0.7
+    timeout: 60
+  glm:
+    api_key: your-glm-api-key
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    max_tokens: 4096
+    model: glm-4-flash
+    temperature: 0.7
+    timeout: 60
+  minimax:
+    api_key: your-minimax-api-key
+    base_url: https://api.minimaxi.com/anthropic
+    max_tokens: 4096
+    model: MiniMax-M2.7-highspeed
+    temperature: 0.7
+  openai:
+    api_key: your-openai-api-key
+    base_url: null
+    max_tokens: 4096
+    model: gpt-4o
+    temperature: 0.7
+    timeout: 60
+  provider: minimax
+logging:
+  format: '{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}'
+  level: INFO
+memory:
+  enabled: true
+  memory_window: 50
+  workspace: ./workspace/memory
+port: 8080
+session:
+  max_sessions: 100
+  storage_path: ./workspace/sessions
+  ttl: 3600
+storage:
+  path: ./data/storage
+  type: memory
+tools:
+  cron:
+    enabled: true
+  filesystem:
+    max_file_size: 104857600
+  mcp_servers: null
+  shell:
+    timeout: 300
+  web:
+    brave_api_key: ''
+    kimi_api_key: ''
+    kimi_base_url: https://api.moonshot.cn/v1
+    kimi_search_path: /search
+    provider: auto  # auto|kimi|brave|ddg
+    proxy: null
+    max_redirects: 5
+    timeout: 30
+workspace: ~/.scidatabot
