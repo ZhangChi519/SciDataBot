@@ -15,16 +15,6 @@ os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 class GLMProvider(LLMProvider):
     """GLM (ZhipuAI) LLM provider - 使用 OpenAI 兼容格式."""
 
-    SUPPORTED_MODELS = [
-        "glm-4",
-        "glm-4-flash",
-        "glm-4-plus",
-        "glm-4v",
-        "glm-4v-flash",
-        "glm-3-turbo",
-        "glm-4-plus-0520",
-        "glm-4-flash-0520",
-    ]
 
     def __init__(
         self,
@@ -89,13 +79,24 @@ class GLMProvider(LLMProvider):
 
         timeout = aiohttp.ClientTimeout(total=self.timeout)
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, json=payload, headers=headers) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise Exception(f"GLM API error: {response.status} - {error_text}")
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise Exception(
+                            f"GLM API error: {response.status}\n"
+                            f"URL: {url}\n"
+                            f"Details: {error_text}"
+                        )
 
-                result = await response.json()
+                    result = await response.json()
+        except aiohttp.ClientError as e:
+            raise Exception(
+                f"GLM API connection error: {str(e)}\n"
+                f"Base URL: {self.base_url}\n"
+                f"Check your API key and network connection."
+            )
 
         # Parse response
         content = ""
